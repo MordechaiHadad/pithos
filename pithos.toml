@@ -11,7 +11,7 @@ downloads = [
     { url = "https://deno.land/install.sh", env = { DENO_INSTALL = "/usr/local" } },
 ]
 
-diff_viewer = "lazygit -p {dir}"
+diff_viewer = "nvim {dir} -c \"Neotree git_status\""
 
 [harness]
 name = "opencode"
