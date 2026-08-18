@@ -161,59 +161,35 @@ fn view_changes(
             *session_view = Some(build_session_view(sandbox, &config.exclusions)?);
         }
         let view = session_view.as_ref().expect("session view built above");
-        run_viewer(viewer, &view.0)
+        run_viewer(viewer, &view.0.join("repo"))
     } else {
         print_diff(changed, source, sandbox)
     }
 }
 
 fn build_session_view(sandbox: &Path, exclusions: &[String]) -> Result<TempDir> {
-    write_exclusions(sandbox, exclusions)?;
-    commit_session(sandbox)?;
     let temp = TempDir::create("pithos-session")?;
-    let bundle_file = temp.0.join("session.bundle");
-    let bundle_path = bundle_file.display().to_string();
-    git_ok(sandbox, &["bundle", "create", &bundle_path, "HEAD"])
+    let bundle_path = temp.0.join("session.bundle").display().to_string();
+    let branch = current_branch(sandbox)?;
+    git_ok(sandbox, &["bundle", "create", &bundle_path, &branch])
         .wrap_err("could not create session bundle")?;
     let repo_dir = temp.0.join("repo");
     let repo_path = repo_dir.display().to_string();
     git_ok(sandbox, &["clone", &bundle_path, &repo_path])
         .wrap_err("could not clone session bundle")?;
+    let mut exclusions = exclusions.to_vec();
+    exclusions.push(".git".into());
+    apply_tree(sandbox, &repo_dir, &exclusions)?;
     Ok(temp)
 }
 
-fn write_exclusions(sandbox: &Path, exclusions: &[String]) -> Result<()> {
-    let exclude_file = sandbox.join(".git/info/exclude");
-    let mut content = fs::read_to_string(&exclude_file).unwrap_or_default();
-    if !content.is_empty() && !content.ends_with('\n') {
-        content.push('\n');
+fn current_branch(sandbox: &Path) -> Result<String> {
+    let output = git(sandbox, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if branch.is_empty() || branch == "HEAD" {
+        bail!("cannot bundle a detached HEAD")
     }
-    for exclusion in exclusions {
-        content.push_str(&format!("/{exclusion}\n"));
-    }
-    fs::write(exclude_file, content)?;
-    Ok(())
-}
-
-fn commit_session(sandbox: &Path) -> Result<()> {
-    let status = git(sandbox, &["status", "--porcelain"])?;
-    if !String::from_utf8_lossy(&status.stdout).trim().is_empty() {
-        git_ok(sandbox, &["add", "-A"])?;
-        git_ok(
-            sandbox,
-            &[
-                "-c",
-                "user.name=Pithos",
-                "-c",
-                "user.email=pithos@localhost",
-                "commit",
-                "-m",
-                "pithos session",
-            ],
-        )
-        .wrap_err("could not commit session changes")?;
-    }
-    Ok(())
+    Ok(branch)
 }
 
 fn run_viewer(viewer: &str, repo: &Path) -> Result<()> {
@@ -535,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn build_session_view_commits_and_bundles_changes() {
+    fn build_session_view_clones_base_and_overlays_changes() {
         let sandbox = TempDir::create("pithos-test-view-sandbox").unwrap();
         commit_base(&sandbox.0);
         write(&sandbox.0, "file.txt", "changed");
@@ -544,10 +520,14 @@ mod tests {
         let repo = view.0.join("repo");
 
         assert!(repo.join(".git").exists());
-        let output = git(&repo, &["show", "HEAD:file.txt"]).unwrap();
-        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "changed");
+        assert_eq!(
+            fs::read_to_string(repo.join("file.txt")).unwrap(),
+            "changed"
+        );
         let output = git(&repo, &["rev-list", "--count", "HEAD"]).unwrap();
-        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "2");
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1");
+        let output = git(&repo, &["status", "--porcelain"]).unwrap();
+        assert!(String::from_utf8_lossy(&output.stdout).contains("file.txt"));
     }
 
     #[test]
@@ -560,9 +540,10 @@ mod tests {
         let view = build_session_view(&sandbox.0, &["secret.txt".to_string()]).unwrap();
         let repo = view.0.join("repo");
 
-        let output = git(&repo, &["show", "--name-only", "--format=", "HEAD"]).unwrap();
-        let files = String::from_utf8_lossy(&output.stdout);
-        assert!(files.contains("keep.txt"));
-        assert!(!files.contains("secret.txt"));
+        assert_eq!(
+            fs::read_to_string(repo.join("keep.txt")).unwrap(),
+            "changed"
+        );
+        assert!(!repo.join("secret.txt").exists());
     }
 }
