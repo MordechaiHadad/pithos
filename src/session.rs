@@ -1,0 +1,568 @@
+use eyre::{Result, WrapErr, bail};
+use std::fs;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use crate::config::Config;
+use crate::image::{build_image, image_up_to_date};
+use crate::sandbox::{TempDir, apply_tree, copy_tree, has_changes};
+
+pub(crate) fn run_session(
+    config: &Config,
+    repository: &Path,
+    auto_yes: bool,
+    auto_no: bool,
+) -> Result<()> {
+    if !repository.join(".git").exists() {
+        bail!("current directory is not a git repository")
+    }
+    if !image_up_to_date(config)? {
+        build_image(config)?;
+    }
+    let sandbox = TempDir::create("pithos-workspace")?;
+    copy_tree(repository, &sandbox.0)?;
+    strip_remotes(&sandbox.0)?;
+    let current_user = format!("{}:{}", current_uid(), current_gid());
+    let mut command = Command::new("podman");
+    command.args([
+        "run",
+        "--rm",
+        "--interactive",
+        "--tty",
+        "--read-only",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        "--userns=keep-id",
+    ]);
+    command.args([
+        "--volume",
+        &format!("{}:{}:rw,Z", sandbox.0.display(), config.workspace),
+    ]);
+    command.args(["--workdir", &config.workspace]);
+    command.args(["--tmpfs", "/tmp", "--user", &current_user]);
+    for (key, value) in &config.environment {
+        command.args(["--env", &format!("{key}={value}")]);
+    }
+    for (key, value) in config.harness.environment() {
+        command.args(["--env", &format!("{key}={value}")]);
+    }
+    config.harness.mount(&mut command, config)?;
+    let status = command
+        .arg(&config.image_tag)
+        .status()
+        .wrap_err("could not execute podman run")?;
+    let changed = has_changes(repository, &sandbox.0, &config.exclusions)?;
+    let apply = if auto_yes {
+        true
+    } else if auto_no || changed.is_empty() {
+        false
+    } else {
+        summarize(&changed, repository, &sandbox.0);
+        let mut session_view = None;
+        review(&changed, repository, &sandbox.0, config, &mut session_view)?
+    };
+    if apply {
+        apply_tree(&sandbox.0, repository, &config.exclusions)?;
+    }
+    if !status.success() {
+        bail!("harness exited with {status}")
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChangeKind {
+    Added,
+    Modified,
+    Deleted,
+}
+
+fn change_kind(source: &Path, sandbox: &Path, relative: &Path) -> ChangeKind {
+    let in_source = fs::symlink_metadata(source.join(relative)).is_ok();
+    let in_sandbox = fs::symlink_metadata(sandbox.join(relative)).is_ok();
+    match (in_source, in_sandbox) {
+        (true, false) => ChangeKind::Deleted,
+        (false, true) => ChangeKind::Added,
+        _ => ChangeKind::Modified,
+    }
+}
+
+fn change_counts(changed: &[PathBuf], source: &Path, sandbox: &Path) -> (usize, usize, usize) {
+    let mut added = 0;
+    let mut modified = 0;
+    let mut deleted = 0;
+    for relative in changed {
+        match change_kind(source, sandbox, relative) {
+            ChangeKind::Added => added += 1,
+            ChangeKind::Modified => modified += 1,
+            ChangeKind::Deleted => deleted += 1,
+        }
+    }
+    (added, modified, deleted)
+}
+
+fn summarize(changed: &[PathBuf], source: &Path, sandbox: &Path) {
+    let (added, modified, deleted) = change_counts(changed, source, sandbox);
+    let noun = if changed.len() == 1 { "file" } else { "files" };
+    let mut breakdown = Vec::new();
+    if added > 0 {
+        breakdown.push(format!("{added} added"));
+    }
+    if modified > 0 {
+        breakdown.push(format!("{modified} modified"));
+    }
+    if deleted > 0 {
+        breakdown.push(format!("{deleted} deleted"));
+    }
+    let mut line = format!("{} {noun} changed", changed.len());
+    if !breakdown.is_empty() {
+        line.push_str(&format!(" ({})", breakdown.join(", ")));
+    }
+    println!("{line}");
+    for relative in changed.iter().take(20) {
+        println!("  {}", relative.display());
+    }
+    if changed.len() > 20 {
+        println!("  ... and {} more", changed.len() - 20);
+    }
+}
+
+fn review(
+    changed: &[PathBuf],
+    source: &Path,
+    sandbox: &Path,
+    config: &Config,
+    session_view: &mut Option<TempDir>,
+) -> Result<bool> {
+    loop {
+        print!("Apply changes to the host repository? [y]es [v]iew diff [n]o: ");
+        io::stdout().flush()?;
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(true),
+            "" | "n" | "no" => return Ok(false),
+            "v" | "view" => view_changes(changed, source, sandbox, config, session_view)?,
+            _ => {}
+        }
+    }
+}
+
+fn view_changes(
+    changed: &[PathBuf],
+    source: &Path,
+    sandbox: &Path,
+    config: &Config,
+    session_view: &mut Option<TempDir>,
+) -> Result<()> {
+    if let Some(viewer) = &config.diff_viewer {
+        if session_view.is_none() {
+            *session_view = Some(build_session_view(sandbox, &config.exclusions)?);
+        }
+        let view = session_view.as_ref().expect("session view built above");
+        run_viewer(viewer, &view.0)
+    } else {
+        print_diff(changed, source, sandbox)
+    }
+}
+
+fn build_session_view(sandbox: &Path, exclusions: &[String]) -> Result<TempDir> {
+    write_exclusions(sandbox, exclusions)?;
+    commit_session(sandbox)?;
+    let temp = TempDir::create("pithos-session")?;
+    let bundle_file = temp.0.join("session.bundle");
+    let bundle_path = bundle_file.display().to_string();
+    git_ok(sandbox, &["bundle", "create", &bundle_path, "HEAD"])
+        .wrap_err("could not create session bundle")?;
+    let repo_dir = temp.0.join("repo");
+    let repo_path = repo_dir.display().to_string();
+    git_ok(sandbox, &["clone", &bundle_path, &repo_path])
+        .wrap_err("could not clone session bundle")?;
+    Ok(temp)
+}
+
+fn write_exclusions(sandbox: &Path, exclusions: &[String]) -> Result<()> {
+    let exclude_file = sandbox.join(".git/info/exclude");
+    let mut content = fs::read_to_string(&exclude_file).unwrap_or_default();
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    for exclusion in exclusions {
+        content.push_str(&format!("/{exclusion}\n"));
+    }
+    fs::write(exclude_file, content)?;
+    Ok(())
+}
+
+fn commit_session(sandbox: &Path) -> Result<()> {
+    let status = git(sandbox, &["status", "--porcelain"])?;
+    if !String::from_utf8_lossy(&status.stdout).trim().is_empty() {
+        git_ok(sandbox, &["add", "-A"])?;
+        git_ok(
+            sandbox,
+            &[
+                "-c",
+                "user.name=Pithos",
+                "-c",
+                "user.email=pithos@localhost",
+                "commit",
+                "-m",
+                "pithos session",
+            ],
+        )
+        .wrap_err("could not commit session changes")?;
+    }
+    Ok(())
+}
+
+fn run_viewer(viewer: &str, repo: &Path) -> Result<()> {
+    let command = viewer.replace("{dir}", &repo.display().to_string());
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .status()
+        .wrap_err("could not run diff_viewer")?;
+    if !status.success() {
+        eprintln!("diff_viewer exited with {status}");
+    }
+    Ok(())
+}
+
+fn strip_remotes(repository: &Path) -> Result<()> {
+    let output = git(repository, &["remote"])?;
+    for name in String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|name| !name.is_empty())
+    {
+        git(repository, &["remote", "remove", name])
+            .wrap_err_with(|| format!("could not remove remote {name}"))?;
+    }
+    Ok(())
+}
+
+fn git(dir: &Path, args: &[&str]) -> Result<Output> {
+    Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .wrap_err("could not run git")
+}
+
+fn git_ok(dir: &Path, args: &[&str]) -> Result<()> {
+    let output = git(dir, args)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+    }
+}
+
+fn print_diff(changed: &[PathBuf], source: &Path, sandbox: &Path) -> Result<()> {
+    let mut rendered = String::new();
+    for relative in changed {
+        let source_path = source.join(relative);
+        let sandbox_path = sandbox.join(relative);
+        let source_type = fs::symlink_metadata(&source_path)
+            .ok()
+            .map(|meta| meta.file_type());
+        let sandbox_type = fs::symlink_metadata(&sandbox_path)
+            .ok()
+            .map(|meta| meta.file_type());
+        let source_is_dir = source_type.as_ref().map(|t| t.is_dir()).unwrap_or(false);
+        let sandbox_is_dir = sandbox_type.as_ref().map(|t| t.is_dir()).unwrap_or(false);
+        let source_is_link = source_type
+            .as_ref()
+            .map(|t| t.is_symlink())
+            .unwrap_or(false);
+        let sandbox_is_link = sandbox_type
+            .as_ref()
+            .map(|t| t.is_symlink())
+            .unwrap_or(false);
+
+        if source_is_dir || sandbox_is_dir {
+            let status = if source_is_dir && sandbox_is_dir {
+                "changed directory"
+            } else if source_is_dir {
+                "removed directory"
+            } else {
+                "added directory"
+            };
+            rendered.push_str(&format!("  {status}: {}\n", relative.display()));
+        } else if source_is_link || sandbox_is_link {
+            let target = |path: &Path, is_link: bool| {
+                if is_link {
+                    fs::read_link(path)
+                        .ok()
+                        .map(|target| target.display().to_string())
+                } else {
+                    None
+                }
+            };
+            match (
+                target(&source_path, source_is_link),
+                target(&sandbox_path, sandbox_is_link),
+            ) {
+                (Some(old), Some(new)) => rendered.push_str(&format!(
+                    "  symlink changed: {} ({} -> {})\n",
+                    relative.display(),
+                    old,
+                    new
+                )),
+                (Some(old), None) => rendered.push_str(&format!(
+                    "  removed symlink: {} (-> {})\n",
+                    relative.display(),
+                    old
+                )),
+                (None, Some(new)) => rendered.push_str(&format!(
+                    "  added symlink: {} (-> {})\n",
+                    relative.display(),
+                    new
+                )),
+                _ => rendered.push_str(&format!("  symlink changed: {}\n", relative.display())),
+            }
+        } else {
+            match file_diff(source, sandbox, relative)? {
+                Some(diff) => rendered.push_str(&diff),
+                None => rendered.push_str(&format!("  {}: diff unavailable\n", relative.display())),
+            }
+        }
+    }
+    print!("{rendered}");
+    Ok(())
+}
+
+fn file_diff(source: &Path, sandbox: &Path, relative: &Path) -> Result<Option<String>> {
+    let source_path = source.join(relative);
+    let sandbox_path = sandbox.join(relative);
+    let (left, right) = match (
+        fs::symlink_metadata(&source_path).is_ok(),
+        fs::symlink_metadata(&sandbox_path).is_ok(),
+    ) {
+        (true, true) => (source_path, sandbox_path),
+        (true, false) => (source_path, PathBuf::from("/dev/null")),
+        _ => (PathBuf::from("/dev/null"), sandbox_path),
+    };
+    git_diff(&left, &right).map(|diff| diff.map(|diff| clean_headers(&diff, relative)))
+}
+
+fn git_diff(left: &Path, right: &Path) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .args(["diff", "--no-index", "--no-color", "--"])
+        .arg(left)
+        .arg(right)
+        .output()
+        .wrap_err("could not run git diff")?;
+    if matches!(output.status.code(), Some(0) | Some(1)) {
+        Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
+    } else {
+        Ok(None)
+    }
+}
+
+fn clean_headers(diff: &str, relative: &Path) -> String {
+    let relative = relative.display().to_string();
+    let mut cleaned = String::new();
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") {
+            cleaned.push_str(&format!("diff --git a/{relative} b/{relative}\n"));
+        } else if line.starts_with("--- ") && !line.starts_with("--- /dev/null") {
+            cleaned.push_str(&format!("--- a/{relative}\n"));
+        } else if line.starts_with("+++ ") && !line.starts_with("+++ /dev/null") {
+            cleaned.push_str(&format!("+++ b/{relative}\n"));
+        } else {
+            cleaned.push_str(line);
+            cleaned.push('\n');
+        }
+    }
+    cleaned
+}
+
+fn current_uid() -> String {
+    current_id("-u")
+}
+
+fn current_gid() -> String {
+    current_id("-g")
+}
+
+fn current_id(flag: &str) -> String {
+    Command::new("id")
+        .arg(flag)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "1000".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(root: &Path, relative: &str, content: &str) {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn change_kind_classifies_add_modified_and_deleted() {
+        let source = TempDir::create("pithos-test-kind-source").unwrap();
+        let sandbox = TempDir::create("pithos-test-kind-sandbox").unwrap();
+        write(&source.0, "modified.txt", "host");
+        write(&sandbox.0, "modified.txt", "sandbox");
+        write(&source.0, "deleted.txt", "gone");
+        write(&sandbox.0, "added.txt", "new");
+
+        assert_eq!(
+            change_kind(&source.0, &sandbox.0, Path::new("added.txt")),
+            ChangeKind::Added
+        );
+        assert_eq!(
+            change_kind(&source.0, &sandbox.0, Path::new("modified.txt")),
+            ChangeKind::Modified
+        );
+        assert_eq!(
+            change_kind(&source.0, &sandbox.0, Path::new("deleted.txt")),
+            ChangeKind::Deleted
+        );
+    }
+
+    #[test]
+    fn change_counts_tally_kinds() {
+        let source = TempDir::create("pithos-test-count-source").unwrap();
+        let sandbox = TempDir::create("pithos-test-count-sandbox").unwrap();
+        write(&source.0, "modified.txt", "host");
+        write(&sandbox.0, "modified.txt", "sandbox");
+        write(&source.0, "deleted.txt", "gone");
+        write(&sandbox.0, "added.txt", "new");
+        write(&sandbox.0, "also-added.txt", "new");
+
+        let changed = has_changes(&source.0, &sandbox.0, &[]).unwrap();
+        assert_eq!(change_counts(&changed, &source.0, &sandbox.0), (2, 1, 1));
+    }
+
+    #[test]
+    fn clean_headers_rewrites_paths_to_relative() {
+        let diff = "diff --git a/tmp/host/mod.txt b/tmp/sandbox/mod.txt\n\
+                    index 94954ab..c152159 100644\n\
+                    --- a/tmp/host/mod.txt\n\
+                    +++ b/tmp/sandbox/mod.txt\n\
+                    @@ -1,2 +1,2 @@\n\
+                    hello\n\
+                    -world\n\
+                    +earth\n";
+        let cleaned = clean_headers(diff, Path::new("src/mod.txt"));
+        assert!(cleaned.contains("diff --git a/src/mod.txt b/src/mod.txt"));
+        assert!(cleaned.contains("--- a/src/mod.txt"));
+        assert!(cleaned.contains("+++ b/src/mod.txt"));
+        assert!(!cleaned.contains("/tmp/host/mod.txt"));
+        assert!(!cleaned.contains("/tmp/sandbox/mod.txt"));
+    }
+
+    #[test]
+    fn clean_headers_keeps_dev_null_sides() {
+        let added = "diff --git a/x b/y\n\
+                     new file mode 100644\n\
+                     index 0000000..3e75765\n\
+                     --- /dev/null\n\
+                     +++ b/tmp/sandbox/added.txt\n\
+                     @@ -0,0 +1 @@\n\
+                     +new\n";
+        let cleaned = clean_headers(added, Path::new("added.txt"));
+        assert!(cleaned.contains("--- /dev/null"));
+        assert!(cleaned.contains("+++ b/added.txt"));
+        assert!(!cleaned.contains("tmp/sandbox"));
+    }
+
+    #[test]
+    fn strip_remotes_removes_all_remotes() {
+        let repo = TempDir::create("pithos-test-remotes").unwrap();
+        git_ok(&repo.0, &["init"]).unwrap();
+        git_ok(
+            &repo.0,
+            &["remote", "add", "origin", "https://example.com/repo.git"],
+        )
+        .unwrap();
+        git_ok(
+            &repo.0,
+            &[
+                "remote",
+                "add",
+                "upstream",
+                "https://example.com/upstream.git",
+            ],
+        )
+        .unwrap();
+
+        strip_remotes(&repo.0).unwrap();
+
+        let output = git(&repo.0, &["remote"]).unwrap();
+        assert!(String::from_utf8_lossy(&output.stdout).trim().is_empty());
+    }
+
+    #[test]
+    fn strip_remotes_noop_without_remotes() {
+        let repo = TempDir::create("pithos-test-no-remotes").unwrap();
+        git_ok(&repo.0, &["init"]).unwrap();
+
+        strip_remotes(&repo.0).unwrap();
+    }
+
+    fn commit_base(sandbox: &Path) {
+        git_ok(sandbox, &["init"]).unwrap();
+        git_ok(
+            sandbox,
+            &[
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn build_session_view_commits_and_bundles_changes() {
+        let sandbox = TempDir::create("pithos-test-view-sandbox").unwrap();
+        commit_base(&sandbox.0);
+        write(&sandbox.0, "file.txt", "changed");
+
+        let view = build_session_view(&sandbox.0, &[]).unwrap();
+        let repo = view.0.join("repo");
+
+        assert!(repo.join(".git").exists());
+        let output = git(&repo, &["show", "HEAD:file.txt"]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "changed");
+        let output = git(&repo, &["rev-list", "--count", "HEAD"]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "2");
+    }
+
+    #[test]
+    fn build_session_view_respects_exclusions() {
+        let sandbox = TempDir::create("pithos-test-view-exclude").unwrap();
+        commit_base(&sandbox.0);
+        write(&sandbox.0, "keep.txt", "changed");
+        write(&sandbox.0, "secret.txt", "changed too");
+
+        let view = build_session_view(&sandbox.0, &["secret.txt".to_string()]).unwrap();
+        let repo = view.0.join("repo");
+
+        let output = git(&repo, &["show", "--name-only", "--format=", "HEAD"]).unwrap();
+        let files = String::from_utf8_lossy(&output.stdout);
+        assert!(files.contains("keep.txt"));
+        assert!(!files.contains("secret.txt"));
+    }
+}

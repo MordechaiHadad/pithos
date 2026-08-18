@@ -1,0 +1,34 @@
+base_image = "node:22-bookworm-slim"
+image_tag = "localhost/pithos-opencode:latest"
+workspace = "/workspace"
+
+install = ["git"]
+cargo = []
+npm = []
+bun = []
+uv = [{ name = "serena-agent", python = "3.13", run = "serena init" }]
+downloads = [
+    { url = "https://deno.land/install.sh", env = { DENO_INSTALL = "/usr/local" } },
+]
+
+[harness]
+name = "opencode"
+command = ["opencode", "/workspace"]
+
+# [harness.allowlist]
+# edit = "allow"
+
+[harness.allowlist.bash]
+"*" = "allow"
+"curl -T *" = "deny"
+"curl --upload-file *" = "deny"
+"wget --post-file *" = "deny"
+"wget --post-data *" = "deny"
+
+[credentials]
+opencode = true
+
+[environment]
+TERM = "xterm-256color"
+
+diff_viewer = "lazygit -p {dir}"
