@@ -158,7 +158,7 @@ fn view_changes(
 ) -> Result<()> {
     if let Some(viewer) = &config.diff_viewer {
         if session_view.is_none() {
-            *session_view = Some(build_session_view(sandbox, &config.exclusions)?);
+            *session_view = Some(build_session_view(source, sandbox, &config.exclusions)?);
         }
         let view = session_view.as_ref().expect("session view built above");
         run_viewer(viewer, &view.0.join("repo"))
@@ -167,15 +167,15 @@ fn view_changes(
     }
 }
 
-fn build_session_view(sandbox: &Path, exclusions: &[String]) -> Result<TempDir> {
+fn build_session_view(source: &Path, sandbox: &Path, exclusions: &[String]) -> Result<TempDir> {
     let temp = TempDir::create("pithos-session")?;
     let bundle_path = temp.0.join("session.bundle").display().to_string();
-    let branch = current_branch(sandbox)?;
-    git_ok(sandbox, &["bundle", "create", &bundle_path, &branch])
+    let branch = current_branch(source)?;
+    git_ok(source, &["bundle", "create", &bundle_path, &branch])
         .wrap_err("could not create session bundle")?;
     let repo_dir = temp.0.join("repo");
     let repo_path = repo_dir.display().to_string();
-    git_ok(sandbox, &["clone", &bundle_path, &repo_path])
+    git_ok(source, &["clone", &bundle_path, &repo_path])
         .wrap_err("could not clone session bundle")?;
     let mut exclusions = exclusions.to_vec();
     exclusions.push(".git".into());
@@ -512,11 +512,13 @@ mod tests {
 
     #[test]
     fn build_session_view_clones_base_and_overlays_changes() {
+        let source = TempDir::create("pithos-test-view-source").unwrap();
+        commit_base(&source.0);
         let sandbox = TempDir::create("pithos-test-view-sandbox").unwrap();
-        commit_base(&sandbox.0);
+        copy_tree(&source.0, &sandbox.0).unwrap();
         write(&sandbox.0, "file.txt", "changed");
 
-        let view = build_session_view(&sandbox.0, &[]).unwrap();
+        let view = build_session_view(&source.0, &sandbox.0, &[]).unwrap();
         let repo = view.0.join("repo");
 
         assert!(repo.join(".git").exists());
@@ -531,13 +533,50 @@ mod tests {
     }
 
     #[test]
+    fn build_session_view_ignores_sandbox_commits() {
+        let source = TempDir::create("pithos-test-view-committed-source").unwrap();
+        commit_base(&source.0);
+        let sandbox = TempDir::create("pithos-test-view-committed-sandbox").unwrap();
+        copy_tree(&source.0, &sandbox.0).unwrap();
+        write(&sandbox.0, "file.txt", "changed");
+        git_ok(&sandbox.0, &["add", "-A"]).unwrap();
+        git_ok(
+            &sandbox.0,
+            &[
+                "-c",
+                "user.name=Pithos",
+                "-c",
+                "user.email=pithos@localhost",
+                "commit",
+                "-m",
+                "agent commit",
+            ],
+        )
+        .unwrap();
+
+        let view = build_session_view(&source.0, &sandbox.0, &[]).unwrap();
+        let repo = view.0.join("repo");
+
+        let output = git(&repo, &["rev-list", "--count", "HEAD"]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1");
+        assert_eq!(
+            fs::read_to_string(repo.join("file.txt")).unwrap(),
+            "changed"
+        );
+        let output = git(&repo, &["status", "--porcelain"]).unwrap();
+        assert!(String::from_utf8_lossy(&output.stdout).contains("file.txt"));
+    }
+
+    #[test]
     fn build_session_view_respects_exclusions() {
+        let source = TempDir::create("pithos-test-view-exclude-source").unwrap();
+        commit_base(&source.0);
         let sandbox = TempDir::create("pithos-test-view-exclude").unwrap();
-        commit_base(&sandbox.0);
+        copy_tree(&source.0, &sandbox.0).unwrap();
         write(&sandbox.0, "keep.txt", "changed");
         write(&sandbox.0, "secret.txt", "changed too");
 
-        let view = build_session_view(&sandbox.0, &["secret.txt".to_string()]).unwrap();
+        let view = build_session_view(&source.0, &sandbox.0, &["secret.txt".to_string()]).unwrap();
         let repo = view.0.join("repo");
 
         assert_eq!(

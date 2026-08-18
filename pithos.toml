@@ -11,6 +11,8 @@ downloads = [
     { url = "https://deno.land/install.sh", env = { DENO_INSTALL = "/usr/local" } },
 ]
 
+diff_viewer = "lazygit -p {dir}"
+
 [harness]
 name = "opencode"
 command = ["opencode", "/workspace"]
@@ -31,4 +33,3 @@ opencode = true
 [environment]
 TERM = "xterm-256color"
 
-diff_viewer = "lazygit -p {dir}"

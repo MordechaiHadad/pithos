@@ -123,6 +123,9 @@ fn validate(config: &Config) -> Result<()> {
     {
         bail!("diff_viewer must contain the {{dir}} placeholder")
     }
+    if config.environment.contains_key("diff_viewer") {
+        bail!("diff_viewer must be a top-level key, not inside [environment]")
+    }
     Ok(())
 }
 
@@ -166,6 +169,19 @@ mod tests {
             "#,
             ))
             .is_ok()
+        );
+        assert!(
+            validate(&parse(
+                r#"
+            [harness]
+            name = "opencode"
+
+            [environment]
+            TERM = "xterm-256color"
+            diff_viewer = "lazygit -p {dir}"
+            "#,
+            ))
+            .is_err()
         );
     }
 }
