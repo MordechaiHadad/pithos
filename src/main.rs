@@ -4,9 +4,12 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::config::Config;
+
 mod config;
 mod harness;
 mod image;
+mod networking;
 mod sandbox;
 mod session;
 
@@ -45,9 +48,9 @@ fn execute() -> Result<()> {
         bail!("--yes and --no cannot be combined")
     }
     let repository = env::current_dir().wrap_err("cannot determine current directory")?;
-    let config = config::load(cli.config.as_deref())?;
+    let config = Config::load(cli.config.as_deref())?;
     match cli.command {
-        Some(Commands::Build) => image::build_image(&config),
+        Some(Commands::Build) => config.build_image(),
         Some(Commands::Run) | None => session::run_session(&config, &repository, cli.yes, cli.no),
     }
 }

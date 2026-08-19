@@ -35,3 +35,13 @@ opencode = true
 [environment]
 TERM = "xterm-256color"
 
+# [networking]
+# Restrict egress from the agent container. Loaded into the container's
+# network namespace from the host via an OCI hook (see README / plan).
+# Values are raw integers in KiB. At least one of payload_size or quota is
+# required. Host prerequisite: `sudo apt install nftables`.
+# payload_size = 8               # per-connection upload cap, KiB (unset = no cap)
+# quota = 102400                 # per-session egress budget, KiB (unset = no quota)
+# whitelist = ["proxy.example.com"]   # extra hosts bypassing cap + quota
+# use_default_whitelist = true   # false disables opencode.ai/exa.ai defaults
+

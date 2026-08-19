@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "hook": {
+    "path": "/home/node/.config/containers/hooks/pithos-egress-cap.sh",
+    "args": ["pithos-egress-cap.sh"]
+  },
+  "when": {
+    "annotations": {
+      "pithos.networking": "1"
+    }
+  },
+  "stages": ["createRuntime"]
+}

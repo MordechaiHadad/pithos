@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use crate::config::Config;
-use crate::image::{build_image, image_up_to_date};
 use crate::sandbox::{TempDir, apply_tree, copy_tree, has_changes};
 
 pub(crate) fn run_session(
@@ -17,8 +16,8 @@ pub(crate) fn run_session(
     if !repository.join(".git").exists() {
         bail!("current directory is not a git repository")
     }
-    if !image_up_to_date(config)? {
-        build_image(config)?;
+    if !config.image_up_to_date()? {
+        config.build_image()?;
     }
     let sandbox = TempDir::create("pithos-workspace")?;
     copy_tree(repository, &sandbox.0)?;
@@ -48,6 +47,9 @@ pub(crate) fn run_session(
         command.args(["--env", &format!("{key}={value}")]);
     }
     config.harness.mount(&mut command, config)?;
+    if let Some(networking) = &config.networking {
+        networking.apply_to(&mut command)?;
+    }
     let status = command
         .arg(&config.image_tag)
         .status()

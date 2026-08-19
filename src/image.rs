@@ -5,126 +5,149 @@ use std::process::Command;
 use crate::config::{Config, Download};
 use crate::sandbox::TempDir;
 
-pub(crate) fn build_image(config: &Config) -> Result<()> {
-    let context = TempDir::create("pithos-build")?;
-    let config_digest = config_digest(config);
-    fs::write(context.0.join("Containerfile"), containerfile(config))
-        .wrap_err("cannot write Containerfile")?;
-    let status = Command::new("podman")
-        .args([
-            "build",
-            "--tag",
-            &config.image_tag,
-            "--label",
-            &format!("pithos.config={config_digest}"),
-            "--file",
-            "Containerfile",
-        ])
-        .arg(&context.0)
-        .status()
-        .wrap_err("could not execute podman build")?;
-    if !status.success() {
-        bail!("podman build failed")
+impl Config {
+    pub(crate) fn build_image(&self) -> Result<()> {
+        let context = TempDir::create("pithos-build")?;
+        let config_digest = self.digest();
+        fs::write(context.0.join("Containerfile"), self.containerfile())
+            .wrap_err("cannot write Containerfile")?;
+        let status = Command::new("podman")
+            .args([
+                "build",
+                "--tag",
+                &self.image_tag,
+                "--label",
+                &format!("pithos.config={config_digest}"),
+                "--file",
+                "Containerfile",
+            ])
+            .arg(&context.0)
+            .status()
+            .wrap_err("could not execute podman build")?;
+        if !status.success() {
+            bail!("podman build failed")
+        }
+        Ok(())
     }
-    Ok(())
-}
 
-pub(crate) fn image_up_to_date(config: &Config) -> Result<bool> {
-    let output = Command::new("podman")
-        .args([
-            "image",
-            "inspect",
-            "--format",
-            "{{ index .Labels \"pithos.config\" }}",
-            &config.image_tag,
-        ])
-        .output()
-        .wrap_err("could not inspect podman image")?;
-    if !output.status.success() {
-        return Ok(false);
+    pub(crate) fn image_up_to_date(&self) -> Result<bool> {
+        let output = Command::new("podman")
+            .args([
+                "image",
+                "inspect",
+                "--format",
+                "{{ index .Labels \"pithos.config\" }}",
+                &self.image_tag,
+            ])
+            .output()
+            .wrap_err("could not inspect podman image")?;
+        if !output.status.success() {
+            return Ok(false);
+        }
+        let stored = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        Ok(stored == self.digest())
     }
-    let stored = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    Ok(stored == config_digest(config))
-}
 
-fn config_digest(config: &Config) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::hash::DefaultHasher::new();
-    containerfile(config).hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
-
-fn containerfile(config: &Config) -> String {
-    let mut output = format!("FROM {}\nWORKDIR {}\n", config.base_image, config.workspace);
-    output.push_str(&config.harness.install());
-    if let Some(line) = install_line(
-        "apt-get update && apt-get install -y --no-install-recommends",
-        " && rm -rf /var/lib/apt/lists/*",
-        &config.install,
-    ) {
-        output.push_str(&line);
+    fn digest(&self) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::hash::DefaultHasher::new();
+        self.containerfile().hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
     }
-    if !config.cargo.is_empty() {
-        output.push_str(
-            "ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo \
-             PATH=/usr/local/cargo/bin:$PATH\n",
-        );
-        output.push_str(
-            "RUN apt-get update && apt-get install -y --no-install-recommends \
-             curl ca-certificates && rm -rf /var/lib/apt/lists/*\n",
-        );
-        output.push_str("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y\n");
-        if let Some(line) = install_line("cargo install", "", &config.cargo) {
+
+    fn containerfile(&self) -> String {
+        let mut output = format!("FROM {}\nWORKDIR {}\n", self.base_image, self.workspace);
+        output.push_str(&self.harness.install());
+        if let Some(line) = install_line(
+            "apt-get update && apt-get install -y --no-install-recommends",
+            " && rm -rf /var/lib/apt/lists/*",
+            &self.install,
+        ) {
             output.push_str(&line);
         }
-    }
-    if let Some(line) = install_line("npm install --global", "", &config.npm) {
-        output.push_str(&line);
-    }
-    if let Some(line) = install_line(
-        "npm install --global bun && bun install --global",
-        "",
-        &config.bun,
-    ) {
-        output.push_str(&line);
-    }
-    if !config.uv.is_empty() {
-        output.push_str(
-            "RUN apt-get update && apt-get install -y --no-install-recommends \
-             curl ca-certificates && rm -rf /var/lib/apt/lists/*\n",
-        );
-        output.push_str(
-            "RUN curl -LsSf https://astral.sh/uv/install.sh | \
-             UV_INSTALL_DIR=/usr/local/bin sh\n",
-        );
-        output.push_str(
-            "ENV PATH=/usr/local/bin:$PATH \
-             UV_TOOL_BIN_DIR=/usr/local/bin \
-             UV_TOOL_DIR=/usr/local/uv/tools \
-             UV_PYTHON_INSTALL_DIR=/usr/local/uv/python\n",
-        );
-        for tool in &config.uv {
-            let name = shell_quote(&tool.name);
-            if let Some(python) = &tool.python {
-                output.push_str(&format!(
-                    "RUN uv tool install {name} --python {}\n",
-                    shell_quote(python)
-                ));
-            } else {
-                output.push_str(&format!("RUN uv tool install {name}\n"));
-            }
-            if let Some(run) = &tool.run {
-                output.push_str(&format!("RUN {run}\n"));
+        if !self.cargo.is_empty() {
+            output.push_str(
+                "ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo \
+                 PATH=/usr/local/cargo/bin:$PATH\n",
+            );
+            output.push_str(
+                "RUN apt-get update && apt-get install -y --no-install-recommends \
+                 curl ca-certificates && rm -rf /var/lib/apt/lists/*\n",
+            );
+            output.push_str("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y\n");
+            if let Some(line) = install_line("cargo install", "", &self.cargo) {
+                output.push_str(&line);
             }
         }
+        if let Some(line) = install_line("npm install --global", "", &self.npm) {
+            output.push_str(&line);
+        }
+        if let Some(line) = install_line(
+            "npm install --global bun && bun install --global",
+            "",
+            &self.bun,
+        ) {
+            output.push_str(&line);
+        }
+        if !self.uv.is_empty() {
+            output.push_str(
+                "RUN apt-get update && apt-get install -y --no-install-recommends \
+                 curl ca-certificates && rm -rf /var/lib/apt/lists/*\n",
+            );
+            output.push_str(
+                "RUN curl -LsSf https://astral.sh/uv/install.sh | \
+                 UV_INSTALL_DIR=/usr/local/bin sh\n",
+            );
+            output.push_str(
+                "ENV PATH=/usr/local/bin:$PATH \
+                 UV_TOOL_BIN_DIR=/usr/local/bin \
+                 UV_TOOL_DIR=/usr/local/uv/tools \
+                 UV_PYTHON_INSTALL_DIR=/usr/local/uv/python\n",
+            );
+            for tool in &self.uv {
+                let name = shell_quote(&tool.name);
+                if let Some(python) = &tool.python {
+                    output.push_str(&format!(
+                        "RUN uv tool install {name} --python {}\n",
+                        shell_quote(python)
+                    ));
+                } else {
+                    output.push_str(&format!("RUN uv tool install {name}\n"));
+                }
+                if let Some(run) = &tool.run {
+                    output.push_str(&format!("RUN {run}\n"));
+                }
+            }
+        }
+        for download in &self.downloads {
+            output.push_str(&format!("RUN {}\n", download.command()));
+        }
+        output.push_str("CMD ");
+        output.push_str(&json_command(self.harness.command()));
+        output.push('\n');
+        output
     }
-    for download in &config.downloads {
-        output.push_str(&format!("RUN {}\n", download_command(download)));
+}
+
+impl Download {
+    fn command(&self) -> String {
+        let env = self
+            .env
+            .iter()
+            .map(|(key, value)| format!("{key}={}", shell_quote(value)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let prefix = "apt-get update && apt-get install -y --no-install-recommends curl ca-certificates unzip && rm -rf /var/lib/apt/lists/*";
+        let env_prefix = if env.is_empty() {
+            String::new()
+        } else {
+            format!("{env} ")
+        };
+        format!(
+            "{prefix} && curl -fsSL {} | {env_prefix}sh",
+            shell_quote(&self.url)
+        )
     }
-    output.push_str("CMD ");
-    output.push_str(&json_command(config.harness.command()));
-    output.push('\n');
-    output
 }
 
 fn install_line(prefix: &str, suffix: &str, items: &[String]) -> Option<String> {
@@ -143,25 +166,6 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn download_command(download: &Download) -> String {
-    let env = download
-        .env
-        .iter()
-        .map(|(key, value)| format!("{key}={}", shell_quote(value)))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let prefix = "apt-get update && apt-get install -y --no-install-recommends curl ca-certificates unzip && rm -rf /var/lib/apt/lists/*";
-    let env_prefix = if env.is_empty() {
-        String::new()
-    } else {
-        format!("{env} ")
-    };
-    format!(
-        "{prefix} && curl -fsSL {} | {env_prefix}sh",
-        shell_quote(&download.url)
-    )
-}
-
 fn json_command(command: &[String]) -> String {
     format!(
         "[{}]",
@@ -177,21 +181,41 @@ fn json_command(command: &[String]) -> String {
 mod tests {
     use super::*;
 
-    fn config_with_cargo() -> Config {
-        toml::from_str(
-            r#"
-            cargo = ["just"]
+    impl Config {
+        fn with_cargo() -> Self {
+            toml::from_str(
+                r#"
+                cargo = ["just"]
 
-            [harness]
-            name = "opencode"
-            "#,
-        )
-        .unwrap()
+                [harness]
+                name = "opencode"
+                "#,
+            )
+            .unwrap()
+        }
+
+        fn with_uv() -> Self {
+            toml::from_str(
+                r#"
+                [harness]
+                name = "opencode"
+
+                [[uv]]
+                name = "serena-agent"
+                python = "3.13"
+                run = "serena init"
+
+                [[uv]]
+                name = "plain-tool"
+                "#,
+            )
+            .unwrap()
+        }
     }
 
     #[test]
     fn cargo_block_installs_rustup_then_crates() {
-        let file = containerfile(&config_with_cargo());
+        let file = Config::with_cargo().containerfile();
         assert!(file.contains("ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo"));
         assert!(file.contains("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y"));
         assert!(file.contains("RUN cargo install 'just'\n"));
@@ -200,31 +224,13 @@ mod tests {
     #[test]
     fn cargo_block_absent_when_no_crates() {
         let config: Config = toml::from_str("[harness]\nname = \"opencode\"").unwrap();
-        let file = containerfile(&config);
+        let file = config.containerfile();
         assert!(!file.contains("rustup"));
-    }
-
-    fn config_with_uv() -> Config {
-        toml::from_str(
-            r#"
-            [harness]
-            name = "opencode"
-
-            [[uv]]
-            name = "serena-agent"
-            python = "3.13"
-            run = "serena init"
-
-            [[uv]]
-            name = "plain-tool"
-            "#,
-        )
-        .unwrap()
     }
 
     #[test]
     fn uv_block_installs_uv_and_tools() {
-        let file = containerfile(&config_with_uv());
+        let file = Config::with_uv().containerfile();
         assert!(file.contains(
             "RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh"
         ));
@@ -238,16 +244,15 @@ mod tests {
     #[test]
     fn uv_block_absent_when_no_tools() {
         let config: Config = toml::from_str("[harness]\nname = \"opencode\"").unwrap();
-        let file = containerfile(&config);
+        let file = config.containerfile();
         assert!(!file.contains("uv"));
     }
 
     #[test]
     fn config_digest_changes_with_tools() {
-        let config = config_with_uv();
-        let mut config = config;
+        let mut config = Config::with_uv();
         config.uv[0].python = Some("3.12".into());
-        assert_ne!(config_digest(&config), config_digest(&config_with_uv()));
+        assert_ne!(config.digest(), Config::with_uv().digest());
     }
 
     #[test]
@@ -263,7 +268,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let file = containerfile(&config);
+        let file = config.containerfile();
         assert!(file.contains(
             "RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates unzip && rm -rf /var/lib/apt/lists/* && curl -fsSL 'https://deno.land/install.sh' | DENO_INSTALL='/usr/local' sh"
         ));
@@ -281,7 +286,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let file = containerfile(&config);
+        let file = config.containerfile();
         assert!(file.contains("curl -fsSL 'https://example.com/install.sh' | sh"));
     }
 }

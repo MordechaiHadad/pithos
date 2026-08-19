@@ -35,6 +35,30 @@ pub(crate) struct Config {
     pub(crate) exclusions: Vec<String>,
     #[serde(default)]
     pub(crate) diff_viewer: Option<String>,
+    #[serde(default)]
+    pub(crate) networking: Option<Networking>,
+}
+
+pub(crate) const DEFAULT_WHITELIST: &[&str] = &["opencode.ai", "mcp.exa.ai", "api.exa.ai"];
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Networking {
+    /// Per-connection upload cap in KiB; unset means no cap.
+    #[serde(default)]
+    pub(crate) payload_size: Option<u64>,
+    /// Per-session egress budget in KiB; unset means no quota.
+    #[serde(default)]
+    pub(crate) quota: Option<u64>,
+    /// Extra hosts that bypass the cap and quota; appended to DEFAULT_WHITELIST.
+    #[serde(default)]
+    pub(crate) whitelist: Vec<String>,
+    #[serde(default = "default_use_default_whitelist")]
+    pub(crate) use_default_whitelist: bool,
+}
+
+fn default_use_default_whitelist() -> bool {
+    true
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -76,12 +100,50 @@ fn default_image_tag() -> String {
     "localhost/pithos-opencode:latest".into()
 }
 
-pub(crate) fn load(explicit: Option<&Path>) -> Result<Config> {
-    let path = resolve_config(explicit)?;
-    let config: Config = toml::from_str(&fs::read_to_string(&path).wrap_err("cannot read config")?)
-        .wrap_err("invalid TOML configuration")?;
-    validate(&config)?;
-    Ok(config)
+impl Config {
+    pub(crate) fn load(explicit: Option<&Path>) -> Result<Self> {
+        let path = resolve_config(explicit)?;
+        let config: Config =
+            toml::from_str(&fs::read_to_string(&path).wrap_err("cannot read config")?)
+                .wrap_err("invalid TOML configuration")?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.harness.command().is_empty() {
+            bail!("harness.command cannot be empty")
+        }
+        if self.workspace.is_empty() || !self.workspace.starts_with('/') {
+            bail!("workspace must be an absolute container path")
+        }
+        if self.uv.iter().any(|tool| tool.name.is_empty()) {
+            bail!("uv tool name cannot be empty")
+        }
+        if self.downloads.iter().any(|d| d.url.is_empty()) {
+            bail!("download url cannot be empty")
+        }
+        if let Some(viewer) = &self.diff_viewer
+            && !viewer.contains("{dir}")
+        {
+            bail!("diff_viewer must contain the {{dir}} placeholder")
+        }
+        if self.environment.contains_key("diff_viewer") {
+            bail!("diff_viewer must be a top-level key, not inside [environment]")
+        }
+        if let Some(networking) = &self.networking {
+            if networking.payload_size.is_none() && networking.quota.is_none() {
+                bail!("[networking] requires at least payload_size or quota")
+            }
+            if networking.payload_size == Some(0) {
+                bail!("networking.payload_size must be greater than 0")
+            }
+            if networking.quota == Some(0) {
+                bail!("networking.quota must be greater than 0")
+            }
+        }
+        Ok(())
+    }
 }
 
 fn resolve_config(explicit: Option<&Path>) -> Result<PathBuf> {
@@ -105,73 +167,58 @@ fn resolve_config(explicit: Option<&Path>) -> Result<PathBuf> {
     )
 }
 
-fn validate(config: &Config) -> Result<()> {
-    if config.harness.command().is_empty() {
-        bail!("harness.command cannot be empty")
-    }
-    if config.workspace.is_empty() || !config.workspace.starts_with('/') {
-        bail!("workspace must be an absolute container path")
-    }
-    if config.uv.iter().any(|tool| tool.name.is_empty()) {
-        bail!("uv tool name cannot be empty")
-    }
-    if config.downloads.iter().any(|d| d.url.is_empty()) {
-        bail!("download url cannot be empty")
-    }
-    if let Some(viewer) = &config.diff_viewer
-        && !viewer.contains("{dir}")
-    {
-        bail!("diff_viewer must contain the {{dir}} placeholder")
-    }
-    if config.environment.contains_key("diff_viewer") {
-        bail!("diff_viewer must be a top-level key, not inside [environment]")
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse(toml: &str) -> Config {
-        toml::from_str(toml).unwrap()
+    impl Config {
+        fn parse(toml: &str) -> Self {
+            toml::from_str(toml).unwrap()
+        }
+
+        fn try_parse(toml: &str) -> Result<Self> {
+            Ok(toml::from_str(toml)?)
+        }
     }
 
     #[test]
     fn diff_viewer_requires_dir_placeholder() {
         assert!(
-            validate(&parse(
+            Config::parse(
                 r#"
             diff_viewer = "lazygit -p {dir}"
 
             [harness]
             name = "opencode"
             "#,
-            ))
+            )
+            .validate()
             .is_ok()
         );
         assert!(
-            validate(&parse(
+            Config::parse(
                 r#"
             diff_viewer = "lazygit -p /tmp"
 
             [harness]
             name = "opencode"
             "#,
-            ))
+            )
+            .validate()
             .is_err()
         );
         assert!(
-            validate(&parse(
+            Config::parse(
                 r#"
             [harness]
             name = "opencode"
             "#,
-            ))
+            )
+            .validate()
             .is_ok()
         );
         assert!(
-            validate(&parse(
+            Config::parse(
                 r#"
             [harness]
             name = "opencode"
@@ -180,8 +227,145 @@ mod tests {
             TERM = "xterm-256color"
             diff_viewer = "lazygit -p {dir}"
             "#,
-            ))
+            )
+            .validate()
             .is_err()
+        );
+    }
+
+    #[test]
+    fn networking_requires_at_least_one_limiter() {
+        assert!(
+            Config::parse(
+                r#"
+            [harness]
+            name = "opencode"
+
+            [networking]
+            payload_size = 8
+            "#,
+            )
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            Config::parse(
+                r#"
+            [harness]
+            name = "opencode"
+
+            [networking]
+            quota = 102400
+            "#,
+            )
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            Config::parse(
+                r#"
+            [harness]
+            name = "opencode"
+
+            [networking]
+            "#,
+            )
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn networking_rejects_zero_and_negative_limits() {
+        assert!(
+            Config::parse(
+                r#"
+            [harness]
+            name = "opencode"
+
+            [networking]
+            payload_size = 0
+            "#,
+            )
+            .validate()
+            .is_err()
+        );
+        assert!(
+            Config::parse(
+                r#"
+            [harness]
+            name = "opencode"
+
+            [networking]
+            quota = 0
+            "#,
+            )
+            .validate()
+            .is_err()
+        );
+        assert!(
+            Config::try_parse(
+                r#"
+            [harness]
+            name = "opencode"
+
+            [networking]
+            payload_size = -1
+            "#,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn networking_quota_is_a_number_not_a_string() {
+        assert!(
+            Config::try_parse(
+                r#"
+            [harness]
+            name = "opencode"
+
+            [networking]
+            quota = "100 mbytes"
+            "#,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn networking_rejects_unknown_fields() {
+        assert!(
+            Config::try_parse(
+                r#"
+            [harness]
+            name = "opencode"
+
+            [networking]
+            payload_size = 8
+            payload_size_kb = 8
+            "#,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn networking_defaults_to_use_default_whitelist() {
+        let config = Config::parse(
+            r#"
+            [harness]
+            name = "opencode"
+
+            [networking]
+            quota = 102400
+            "#,
+        );
+        let networking = config.networking.unwrap();
+        assert!(networking.use_default_whitelist);
+        assert_eq!(
+            DEFAULT_WHITELIST,
+            ["opencode.ai", "mcp.exa.ai", "api.exa.ai"]
         );
     }
 }
