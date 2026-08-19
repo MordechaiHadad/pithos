@@ -1,3 +1,4 @@
+use clap::ValueEnum;
 use eyre::{Result, WrapErr, bail, eyre};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -43,8 +44,9 @@ pub(crate) struct Config {
 
 pub(crate) const DEFAULT_WHITELIST: &[&str] = &["opencode.ai", "mcp.exa.ai", "api.exa.ai"];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
+#[clap(rename_all = "kebab-case")]
 pub(crate) enum Toolchain {
     Rust,
     Python,
@@ -110,6 +112,20 @@ fn default_image_tag() -> String {
 }
 
 impl Config {
+    pub(crate) fn init(toolchain: Option<Toolchain>) -> Result<()> {
+        let path = Path::new("pithos.toml");
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .wrap_err("cannot create pithos.toml")?;
+        let contents = starter_config(toolchain);
+        std::io::Write::write_all(&mut file, contents.as_bytes())
+            .wrap_err("cannot write pithos.toml")?;
+        println!("created {}", path.display());
+        Ok(())
+    }
+
     pub(crate) fn load(explicit: Option<&Path>) -> Result<Self> {
         let path = resolve_config(explicit)?;
         let config: Config =
@@ -152,6 +168,22 @@ impl Config {
             }
         }
         Ok(())
+    }
+}
+
+fn starter_config(toolchain: Option<Toolchain>) -> String {
+    let toolchains = toolchain
+        .map(|toolchain| format!("toolchains = [\"{}\"]\n", toolchain_name(toolchain)))
+        .unwrap_or_default();
+    format!(
+        "base_image = \"node:22-bookworm-slim\"\nimage_tag = \"localhost/pithos-opencode:latest\"\nworkspace = \"/workspace\"\n\n{toolchains}\n[harness]\nname = \"opencode\"\ncommand = [\"opencode\", \"/workspace\"]\n"
+    )
+}
+
+fn toolchain_name(toolchain: Toolchain) -> &'static str {
+    match toolchain {
+        Toolchain::Rust => "rust",
+        Toolchain::Python => "python",
     }
 }
 
@@ -200,10 +232,7 @@ mod tests {
             name = "opencode"
             "#,
         );
-        assert_eq!(
-            config.toolchains,
-            vec![Toolchain::Rust, Toolchain::Python]
-        );
+        assert_eq!(config.toolchains, vec![Toolchain::Rust, Toolchain::Python]);
     }
 
     #[test]
@@ -230,6 +259,22 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn starter_config_defaults_without_toolchain() {
+        let config: Config = toml::from_str(&starter_config(None)).unwrap();
+        assert!(config.toolchains.is_empty());
+        assert_eq!(
+            config.harness.command(),
+            ["opencode", "/workspace"].as_slice()
+        );
+    }
+
+    #[test]
+    fn starter_config_includes_selected_toolchain() {
+        let config: Config = toml::from_str(&starter_config(Some(Toolchain::Python))).unwrap();
+        assert_eq!(config.toolchains, vec![Toolchain::Python]);
     }
 
     #[test]
