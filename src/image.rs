@@ -108,14 +108,10 @@ impl Toolchain {
                     "ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo \
                      PATH=/usr/local/cargo/bin:$PATH\n",
                 );
-                let mut apt =
+                block.push_str(
                     "RUN apt-get update && apt-get install -y --no-install-recommends \
-                     curl ca-certificates"
-                        .to_owned();
-                if listed {
-                    apt.push_str(" gcc libc6-dev");
-                }
-                block.push_str(&format!("{apt} && rm -rf /var/lib/apt/lists/*\n"));
+                     curl ca-certificates gcc libc6-dev && rm -rf /var/lib/apt/lists/*\n",
+                );
                 block.push_str("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y\n");
                 if listed {
                     block.push_str("RUN rustup component add rust-analyzer\n");
@@ -282,7 +278,7 @@ mod tests {
         assert!(file.contains("RUN cargo install 'just'\n"));
         assert!(file.contains(
             "RUN apt-get update && apt-get install -y --no-install-recommends \
-             curl ca-certificates && rm -rf /var/lib/apt/lists/*\n"
+             curl ca-certificates gcc libc6-dev && rm -rf /var/lib/apt/lists/*\n"
         ));
     }
 
@@ -344,8 +340,8 @@ mod tests {
     fn cargo_without_toolchain_skips_rust_analyzer() {
         let file = Config::with_cargo().containerfile();
         assert!(file.contains("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y"));
+        assert!(file.contains("gcc libc6-dev"));
         assert!(!file.contains("rust-analyzer"));
-        assert!(!file.contains("gcc libc6-dev"));
     }
 
     #[test]

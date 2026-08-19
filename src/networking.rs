@@ -1,7 +1,7 @@
 use eyre::{Result, WrapErr, bail};
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::Networking;
@@ -63,6 +63,7 @@ impl Networking {
     }
 
     pub(crate) fn apply_to(&self, command: &mut Command) -> Result<()> {
+        verify_host_support()?;
         let hosts = self.effective_whitelist();
         let (v4, v6) = resolve_hosts(&hosts);
         let rules = self.render_rules(&v4, &v6);
@@ -110,6 +111,102 @@ pub(crate) fn write_rules(rules: &str, pid: u32) -> Result<PathBuf> {
     Ok(path)
 }
 
+pub(crate) fn verify_host_support() -> Result<()> {
+    let mut search = vec![
+        PathBuf::from("/usr/share/containers/oci/hooks.d"),
+        PathBuf::from("/etc/containers/oci/hooks.d"),
+    ];
+    if let Some(config_dir) = dirs::config_dir() {
+        search.push(config_dir.join("containers/oci/hooks.d"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        search.push(home.join(".config/containers/oci/hooks.d"));
+    }
+    match registered_hook(&search) {
+        Some((json_path, hook_path)) => {
+            if !is_executable(&hook_path) {
+                bail!(
+                    "OCI hook script {} (referenced by {}) is missing or not executable; \
+                     fix the path or chmod +x the script",
+                    hook_path.display(),
+                    json_path.display()
+                )
+            }
+        }
+        None => bail!(
+            "no OCI hook registered for pithos networking. Install \
+             host/oci-hooks.d/pithos-egress-cap.json and its hook script into one of: {}",
+            search
+                .iter()
+                .map(|dir| dir.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+    if !nft_available() {
+        bail!(
+            "nftables not found (expected /usr/sbin/nft or nft on PATH); install with `sudo apt install nftables`"
+        )
+    }
+    Ok(())
+}
+
+fn registered_hook(search: &[PathBuf]) -> Option<(PathBuf, PathBuf)> {
+    for dir in search {
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let json_path = entry.path();
+            if json_path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let content = match fs::read_to_string(&json_path) {
+                Ok(content) => content,
+                Err(_) => continue,
+            };
+            let value: serde_json::Value = match serde_json::from_str(&content) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let matches = value
+                .get("when")
+                .and_then(|when| when.get("annotations"))
+                .and_then(|annotations| annotations.get("pithos.networking"))
+                .and_then(|annotation| annotation.as_str())
+                == Some("1");
+            if !matches {
+                continue;
+            }
+            let hook_path = value
+                .get("hook")
+                .and_then(|hook| hook.get("path"))
+                .and_then(|path| path.as_str())
+                .map(PathBuf::from);
+            if let Some(hook_path) = hook_path {
+                return Some((json_path, hook_path));
+            }
+        }
+    }
+    None
+}
+
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path)
+        .map(|meta| meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+fn nft_available() -> bool {
+    let mut candidates = vec![PathBuf::from("/usr/sbin/nft")];
+    if let Some(path_env) = std::env::var_os("PATH") {
+        candidates.extend(std::env::split_paths(&path_env).map(|dir| dir.join("nft")));
+    }
+    candidates.iter().any(|candidate| candidate.is_file())
+}
+
 fn runtime_directory() -> Result<PathBuf> {
     let directory = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -141,6 +238,8 @@ fn render_addr_list(addrs: &[impl std::fmt::Display]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::sandbox::TempDir;
 
     fn v4(value: &str) -> Ipv4Addr {
         value.parse().unwrap()
@@ -267,5 +366,56 @@ mod tests {
             networking.effective_whitelist(),
             vec!["proxy.example.com".to_string()]
         );
+    }
+
+    #[test]
+    fn registered_hook_finds_matching_annotation() {
+        let dir = TempDir::create("pithos-hook-test").unwrap();
+        fs::write(
+            dir.0.join("pithos-egress-cap.json"),
+            r#"{
+              "version": "1.0.0",
+              "hook": { "path": "/usr/local/bin/pithos-egress-cap.sh", "args": [] },
+              "when": { "annotations": { "pithos.networking": "1" } },
+              "stages": ["createRuntime"]
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.0.join("other.json"),
+            r#"{
+              "version": "1.0.0",
+              "hook": { "path": "/usr/local/bin/other.sh", "args": [] },
+              "when": { "annotations": { "some.other.annotation": "1" } },
+              "stages": ["createRuntime"]
+            }"#,
+        )
+        .unwrap();
+
+        let (json_path, hook_path) = registered_hook(std::slice::from_ref(&dir.0)).unwrap();
+        assert_eq!(
+            json_path.file_name().unwrap().to_str().unwrap(),
+            "pithos-egress-cap.json"
+        );
+        assert_eq!(
+            hook_path,
+            PathBuf::from("/usr/local/bin/pithos-egress-cap.sh")
+        );
+    }
+
+    #[test]
+    fn registered_hook_returns_none_without_match() {
+        let dir = TempDir::create("pithos-hook-test-none").unwrap();
+        fs::write(
+            dir.0.join("other.json"),
+            r#"{
+              "version": "1.0.0",
+              "hook": { "path": "/usr/local/bin/other.sh", "args": [] },
+              "when": { "annotations": { "some.other.annotation": "1" } },
+              "stages": ["createRuntime"]
+            }"#,
+        )
+        .unwrap();
+        assert!(registered_hook(std::slice::from_ref(&dir.0)).is_none());
     }
 }
