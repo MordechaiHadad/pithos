@@ -4,7 +4,8 @@ workspace = "/workspace"
 
 exclusions = ["target", ".serena"]
 
-install = ["git", "gcc", "libc6-dev"]
+install = ["git"]
+toolchains = ["rust"]
 cargo = ["just"]
 npm = []
 bun = []

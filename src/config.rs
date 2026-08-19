@@ -17,6 +17,8 @@ pub(crate) struct Config {
     #[serde(default)]
     pub(crate) install: Vec<String>,
     #[serde(default)]
+    pub(crate) toolchains: Vec<Toolchain>,
+    #[serde(default)]
     pub(crate) cargo: Vec<String>,
     #[serde(default)]
     pub(crate) npm: Vec<String>,
@@ -40,6 +42,13 @@ pub(crate) struct Config {
 }
 
 pub(crate) const DEFAULT_WHITELIST: &[&str] = &["opencode.ai", "mcp.exa.ai", "api.exa.ai"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Toolchain {
+    Rust,
+    Python,
+}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -179,6 +188,48 @@ mod tests {
         fn try_parse(toml: &str) -> Result<Self> {
             Ok(toml::from_str(toml)?)
         }
+    }
+
+    #[test]
+    fn toolchains_parse_known_names() {
+        let config = Config::parse(
+            r#"
+            toolchains = ["rust", "python"]
+
+            [harness]
+            name = "opencode"
+            "#,
+        );
+        assert_eq!(
+            config.toolchains,
+            vec![Toolchain::Rust, Toolchain::Python]
+        );
+    }
+
+    #[test]
+    fn toolchains_default_to_empty() {
+        let config = Config::parse(
+            r#"
+            [harness]
+            name = "opencode"
+            "#,
+        );
+        assert!(config.toolchains.is_empty());
+    }
+
+    #[test]
+    fn toolchains_reject_unknown_names() {
+        assert!(
+            Config::try_parse(
+                r#"
+            toolchains = ["rust", "golang"]
+
+            [harness]
+            name = "opencode"
+            "#,
+            )
+            .is_err()
+        );
     }
 
     #[test]

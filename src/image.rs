@@ -2,7 +2,7 @@ use eyre::{Result, WrapErr, bail};
 use std::fs;
 use std::process::Command;
 
-use crate::config::{Config, Download};
+use crate::config::{Config, Download, Toolchain};
 use crate::sandbox::TempDir;
 
 impl Config {
@@ -65,18 +65,9 @@ impl Config {
         ) {
             output.push_str(&line);
         }
-        if !self.cargo.is_empty() {
-            output.push_str(
-                "ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo \
-                 PATH=/usr/local/cargo/bin:$PATH\n",
-            );
-            output.push_str(
-                "RUN apt-get update && apt-get install -y --no-install-recommends \
-                 curl ca-certificates && rm -rf /var/lib/apt/lists/*\n",
-            );
-            output.push_str("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y\n");
-            if let Some(line) = install_line("cargo install", "", &self.cargo) {
-                output.push_str(&line);
+        for toolchain in Toolchain::ALL {
+            if toolchain.wanted(self) {
+                output.push_str(&toolchain.install_block(self));
             }
         }
         if let Some(line) = install_line("npm install --global", "", &self.npm) {
@@ -89,36 +80,6 @@ impl Config {
         ) {
             output.push_str(&line);
         }
-        if !self.uv.is_empty() {
-            output.push_str(
-                "RUN apt-get update && apt-get install -y --no-install-recommends \
-                 curl ca-certificates && rm -rf /var/lib/apt/lists/*\n",
-            );
-            output.push_str(
-                "RUN curl -LsSf https://astral.sh/uv/install.sh | \
-                 UV_INSTALL_DIR=/usr/local/bin sh\n",
-            );
-            output.push_str(
-                "ENV PATH=/usr/local/bin:$PATH \
-                 UV_TOOL_BIN_DIR=/usr/local/bin \
-                 UV_TOOL_DIR=/usr/local/uv/tools \
-                 UV_PYTHON_INSTALL_DIR=/usr/local/uv/python\n",
-            );
-            for tool in &self.uv {
-                let name = shell_quote(&tool.name);
-                if let Some(python) = &tool.python {
-                    output.push_str(&format!(
-                        "RUN uv tool install {name} --python {}\n",
-                        shell_quote(python)
-                    ));
-                } else {
-                    output.push_str(&format!("RUN uv tool install {name}\n"));
-                }
-                if let Some(run) = &tool.run {
-                    output.push_str(&format!("RUN {run}\n"));
-                }
-            }
-        }
         for download in &self.downloads {
             output.push_str(&format!("RUN {}\n", download.command()));
         }
@@ -126,6 +87,82 @@ impl Config {
         output.push_str(&json_command(self.harness.command()));
         output.push('\n');
         output
+    }
+}
+
+impl Toolchain {
+    const ALL: [Toolchain; 2] = [Toolchain::Rust, Toolchain::Python];
+
+    fn wanted(&self, config: &Config) -> bool {
+        match self {
+            Toolchain::Rust => config.toolchains.contains(self) || !config.cargo.is_empty(),
+            Toolchain::Python => config.toolchains.contains(self) || !config.uv.is_empty(),
+        }
+    }
+
+    fn install_block(&self, config: &Config) -> String {
+        let listed = config.toolchains.contains(self);
+        match self {
+            Toolchain::Rust => {
+                let mut block = String::from(
+                    "ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo \
+                     PATH=/usr/local/cargo/bin:$PATH\n",
+                );
+                let mut apt =
+                    "RUN apt-get update && apt-get install -y --no-install-recommends \
+                     curl ca-certificates"
+                        .to_owned();
+                if listed {
+                    apt.push_str(" gcc libc6-dev");
+                }
+                block.push_str(&format!("{apt} && rm -rf /var/lib/apt/lists/*\n"));
+                block.push_str("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y\n");
+                if listed {
+                    block.push_str("RUN rustup component add rust-analyzer\n");
+                }
+                if let Some(line) = install_line("cargo install", "", &config.cargo) {
+                    block.push_str(&line);
+                }
+                block
+            }
+            Toolchain::Python => {
+                let mut block = String::from(
+                    "RUN apt-get update && apt-get install -y --no-install-recommends \
+                     curl ca-certificates && rm -rf /var/lib/apt/lists/*\n",
+                );
+                block.push_str(
+                    "RUN curl -LsSf https://astral.sh/uv/install.sh | \
+                     UV_INSTALL_DIR=/usr/local/bin sh\n",
+                );
+                block.push_str(
+                    "ENV PATH=/usr/local/bin:$PATH \
+                     UV_TOOL_BIN_DIR=/usr/local/bin \
+                     UV_TOOL_DIR=/usr/local/uv/tools \
+                     UV_PYTHON_INSTALL_DIR=/usr/local/uv/python\n",
+                );
+                if listed {
+                    block.push_str("RUN uv tool install ruff\n");
+                }
+                for tool in &config.uv {
+                    let name = shell_quote(&tool.name);
+                    if let Some(python) = &tool.python {
+                        block.push_str(&format!(
+                            "RUN uv tool install {name} --python {}\n",
+                            shell_quote(python)
+                        ));
+                    } else {
+                        block.push_str(&format!("RUN uv tool install {name}\n"));
+                    }
+                    if let Some(run) = &tool.run {
+                        block.push_str(&format!("RUN {run}\n"));
+                    }
+                }
+                if listed {
+                    block.push_str("RUN npm install --global pyright\n");
+                }
+                block
+            }
+        }
     }
 }
 
@@ -182,6 +219,30 @@ mod tests {
     use super::*;
 
     impl Config {
+        fn with_rust_toolchain() -> Self {
+            toml::from_str(
+                r#"
+                toolchains = ["rust"]
+
+                [harness]
+                name = "opencode"
+                "#,
+            )
+            .unwrap()
+        }
+
+        fn with_python_toolchain() -> Self {
+            toml::from_str(
+                r#"
+                toolchains = ["python"]
+
+                [harness]
+                name = "opencode"
+                "#,
+            )
+            .unwrap()
+        }
+
         fn with_cargo() -> Self {
             toml::from_str(
                 r#"
@@ -219,6 +280,47 @@ mod tests {
         assert!(file.contains("ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo"));
         assert!(file.contains("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y"));
         assert!(file.contains("RUN cargo install 'just'\n"));
+        assert!(file.contains(
+            "RUN apt-get update && apt-get install -y --no-install-recommends \
+             curl ca-certificates && rm -rf /var/lib/apt/lists/*\n"
+        ));
+    }
+
+    #[test]
+    fn every_line_is_a_valid_instruction() {
+        let config: Config = toml::from_str(
+            r#"
+            toolchains = ["rust", "python"]
+            install = ["git"]
+            cargo = ["just"]
+            npm = ["prettier"]
+            bun = ["htmx"]
+            uv = [{ name = "serena-agent", python = "3.13", run = "serena init" }]
+
+            [harness]
+            name = "opencode"
+
+            [[downloads]]
+            url = "https://example.com/install.sh"
+            "#,
+        )
+        .unwrap();
+        for line in config.containerfile().lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let instruction = line.split_whitespace().next().unwrap();
+            assert!(
+                matches!(
+                    instruction,
+                    "FROM" | "WORKDIR" | "RUN" | "ENV" | "CMD" | "ARG" | "LABEL"
+                        | "COPY" | "ADD" | "EXPOSE" | "VOLUME" | "USER" | "ENTRYPOINT"
+                        | "SHELL" | "STOPSIGNAL" | "HEALTHCHECK" | "ONBUILD" | "COMMENT"
+                ),
+                "unexpected instruction {instruction:?} in line {line:?}"
+            );
+        }
     }
 
     #[test]
@@ -226,6 +328,42 @@ mod tests {
         let config: Config = toml::from_str("[harness]\nname = \"opencode\"").unwrap();
         let file = config.containerfile();
         assert!(!file.contains("rustup"));
+    }
+
+    #[test]
+    fn rust_toolchain_installs_rustup_analyzer_and_build_deps() {
+        let file = Config::with_rust_toolchain().containerfile();
+        assert!(file.contains("ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo"));
+        assert!(file.contains("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y"));
+        assert!(file.contains("gcc libc6-dev"));
+        assert!(file.contains("RUN rustup component add rust-analyzer\n"));
+        assert!(!file.contains("cargo install"));
+    }
+
+    #[test]
+    fn cargo_without_toolchain_skips_rust_analyzer() {
+        let file = Config::with_cargo().containerfile();
+        assert!(file.contains("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y"));
+        assert!(!file.contains("rust-analyzer"));
+        assert!(!file.contains("gcc libc6-dev"));
+    }
+
+    #[test]
+    fn python_toolchain_installs_uv_ruff_and_pyright() {
+        let file = Config::with_python_toolchain().containerfile();
+        assert!(file.contains(
+            "RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh"
+        ));
+        assert!(file.contains("RUN uv tool install ruff\n"));
+        assert!(file.contains("RUN npm install --global pyright\n"));
+    }
+
+    #[test]
+    fn uv_without_toolchain_skips_ruff_and_pyright() {
+        let file = Config::with_uv().containerfile();
+        assert!(file.contains("RUN uv tool install 'serena-agent' --python '3.13'\n"));
+        assert!(!file.contains("ruff"));
+        assert!(!file.contains("pyright"));
     }
 
     #[test]
