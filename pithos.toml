@@ -3,7 +3,7 @@ image_tag = "localhost/pithos-opencode:latest"
 workspace = "/workspace"
 
 install = ["git"]
-cargo = []
+cargo = ["just"]
 npm = []
 bun = []
 uv = [{ name = "serena-agent", python = "3.13", run = "serena init" }]

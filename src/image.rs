@@ -65,7 +65,15 @@ fn containerfile(config: &Config) -> String {
         output.push_str(&line);
     }
     if !config.cargo.is_empty() {
-        output.push_str("RUN apt-get update && apt-get install -y --no-install-recommends cargo && rm -rf /var/lib/apt/lists/*\n");
+        output.push_str(
+            "ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo \
+             PATH=/usr/local/cargo/bin:$PATH\n",
+        );
+        output.push_str(
+            "RUN apt-get update && apt-get install -y --no-install-recommends \
+             curl ca-certificates && rm -rf /var/lib/apt/lists/*\n",
+        );
+        output.push_str("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y\n");
         if let Some(line) = install_line("cargo install", "", &config.cargo) {
             output.push_str(&line);
         }
@@ -168,6 +176,33 @@ fn json_command(command: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn config_with_cargo() -> Config {
+        toml::from_str(
+            r#"
+            cargo = ["just"]
+
+            [harness]
+            name = "opencode"
+            "#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn cargo_block_installs_rustup_then_crates() {
+        let file = containerfile(&config_with_cargo());
+        assert!(file.contains("ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo"));
+        assert!(file.contains("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y"));
+        assert!(file.contains("RUN cargo install 'just'\n"));
+    }
+
+    #[test]
+    fn cargo_block_absent_when_no_crates() {
+        let config: Config = toml::from_str("[harness]\nname = \"opencode\"").unwrap();
+        let file = containerfile(&config);
+        assert!(!file.contains("rustup"));
+    }
 
     fn config_with_uv() -> Config {
         toml::from_str(
