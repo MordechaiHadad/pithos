@@ -48,9 +48,20 @@ fn copy_entry(source: &Path, destination: &Path) -> Result<()> {
         let target = fs::read_link(source)?;
         std::os::unix::fs::symlink(target, destination)?;
     } else if file_type.is_file() {
-        fs::copy(source, destination)?;
+        atomic_copy(source, destination)?;
     } else {
         eprintln!("warning: skipping special file {}", source.display());
+    }
+    Ok(())
+}
+
+fn atomic_copy(source: &Path, destination: &Path) -> Result<()> {
+    let file_name = destination.file_name().unwrap_or_default().to_string_lossy();
+    let temp = destination.with_file_name(format!(".{file_name}.pithos-tmp"));
+    fs::copy(source, &temp)?;
+    if let Err(error) = fs::rename(&temp, destination) {
+        let _ = fs::remove_file(&temp);
+        return Err(error.into());
     }
     Ok(())
 }
