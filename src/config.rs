@@ -63,7 +63,7 @@ pub(crate) struct Credentials {
 }
 
 fn default_exclusions() -> Vec<String> {
-    vec![".git".into()]
+    vec![]
 }
 
 fn default_base_image() -> String {

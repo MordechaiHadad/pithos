@@ -177,9 +177,7 @@ fn build_session_view(source: &Path, sandbox: &Path, exclusions: &[String]) -> R
     let repo_path = repo_dir.display().to_string();
     git_ok(source, &["clone", &bundle_path, &repo_path])
         .wrap_err("could not clone session bundle")?;
-    let mut exclusions = exclusions.to_vec();
-    exclusions.push(".git".into());
-    apply_tree(sandbox, &repo_dir, &exclusions)?;
+    apply_tree(sandbox, &repo_dir, exclusions)?;
     Ok(temp)
 }
 

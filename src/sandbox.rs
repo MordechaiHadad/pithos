@@ -89,9 +89,11 @@ pub(crate) fn has_changes(
 }
 
 fn is_excluded(relative: &Path, exclusions: &[String]) -> bool {
-    exclusions.iter().any(|exclusion| {
-        relative == Path::new(exclusion) || relative.starts_with(format!("{exclusion}/"))
-    })
+    relative == Path::new(".git")
+        || relative.starts_with(".git/")
+        || exclusions.iter().any(|exclusion| {
+            relative == Path::new(exclusion) || relative.starts_with(format!("{exclusion}/"))
+        })
 }
 
 fn collect_paths(root: &Path, relative: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
@@ -382,5 +384,12 @@ mod tests {
         assert!(!is_excluded(Path::new("src/main.rs"), &exclusions));
         assert!(!is_excluded(Path::new(".github"), &exclusions));
         assert!(!is_excluded(Path::new("targeting"), &exclusions));
+    }
+
+    #[test]
+    fn is_excluded_always_ignores_git_even_when_absent_from_list() {
+        let exclusions = vec!["target".to_string(), ".serena".to_string()];
+        assert!(is_excluded(Path::new(".git"), &exclusions));
+        assert!(is_excluded(Path::new(".git/objects/abc"), &exclusions));
     }
 }
