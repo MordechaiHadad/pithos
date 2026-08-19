@@ -2,7 +2,7 @@ base_image = "node:22-bookworm-slim"
 image_tag = "localhost/pithos-opencode:latest"
 workspace = "/workspace"
 
-install = ["git"]
+install = ["git", "gcc", "libc6-dev"]
 cargo = ["just"]
 npm = []
 bun = []
