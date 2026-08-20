@@ -342,6 +342,16 @@ mod tests {
     }
 
     #[test]
+    fn toolchain_flag_installs_toolchain_without_config_entry() {
+        let config: Config = toml::from_str("[harness]\nname = \"opencode\"").unwrap();
+        let config = config.with_toolchain(Some(Toolchain::Rust));
+        let file = config.containerfile();
+        assert!(file.contains("ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo"));
+        assert!(file.contains("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y"));
+        assert!(file.contains("RUN rustup component add rust-analyzer\n"));
+    }
+
+    #[test]
     fn rust_toolchain_installs_rustup_analyzer_and_build_deps() {
         let file = Config::with_rust_toolchain().containerfile();
         assert!(file.contains("ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo"));

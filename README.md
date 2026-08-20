@@ -74,6 +74,21 @@ Running `pithos` without a subcommand is equivalent to `pithos run`.
 Use `--yes` to apply changes without asking for confirmation, or `--no` to
 discard changes without asking. These options cannot be used together.
 
+A toolchain can be selected on the command line instead of listing it in the
+configuration. It works as a global option or on the `build` and `run`
+subcommands:
+
+```sh
+pithos --toolchain rust
+pithos run --toolchain rust
+pithos build --toolchain python
+```
+
+`--toolchain` (or `-t`) overrides the `toolchains` key in the configuration and
+uses an image tag suffixed with the toolchain name, so `pithos run --toolchain
+rust` reuses an existing `...:latest-rust` image when it already matches the
+configuration.
+
 An alternate configuration can be selected with the global `--config` option:
 
 ```sh

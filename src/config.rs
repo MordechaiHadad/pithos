@@ -126,6 +126,14 @@ impl Config {
         Ok(config)
     }
 
+    pub(crate) fn with_toolchain(mut self, toolchain: Option<Toolchain>) -> Self {
+        if let Some(toolchain) = toolchain {
+            self.toolchains = vec![toolchain];
+            self.image_tag = format!("{}-{}", self.image_tag, toolchain_name(toolchain));
+        }
+        self
+    }
+
     fn validate(&self) -> Result<()> {
         if self.harness.command().is_empty() {
             bail!("harness.command cannot be empty")
@@ -266,6 +274,38 @@ mod tests {
     fn starter_config_includes_selected_toolchain() {
         let config: Config = toml::from_str(&starter_config(Some(Toolchain::Python))).unwrap();
         assert_eq!(config.toolchains, vec![Toolchain::Python]);
+    }
+
+    #[test]
+    fn with_toolchain_overrides_config_toolchains_and_retags() {
+        let config: Config = toml::from_str(
+            r#"
+            toolchains = ["python"]
+
+            [harness]
+            name = "opencode"
+            "#,
+        )
+        .unwrap();
+        let config = config.with_toolchain(Some(Toolchain::Rust));
+        assert_eq!(config.toolchains, vec![Toolchain::Rust]);
+        assert_eq!(config.image_tag, "localhost/pithos-opencode:latest-rust");
+    }
+
+    #[test]
+    fn with_toolchain_none_keeps_config_toolchains() {
+        let config: Config = toml::from_str(
+            r#"
+            toolchains = ["python"]
+
+            [harness]
+            name = "opencode"
+            "#,
+        )
+        .unwrap();
+        let config = config.with_toolchain(None);
+        assert_eq!(config.toolchains, vec![Toolchain::Python]);
+        assert_eq!(config.image_tag, "localhost/pithos-opencode:latest");
     }
 
     #[test]

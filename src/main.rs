@@ -19,6 +19,8 @@ mod session;
 struct Cli {
     #[arg(short, long)]
     config: Option<PathBuf>,
+    #[arg(short = 't', long, global = true)]
+    toolchain: Option<config::Toolchain>,
     #[arg(long)]
     yes: bool,
     #[arg(long)]
@@ -29,10 +31,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Init {
-        #[arg(long)]
-        toolchain: Option<config::Toolchain>,
-    },
+    Init,
     Build,
     Run,
 }
@@ -53,11 +52,13 @@ fn execute() -> Result<()> {
         bail!("--yes and --no cannot be combined")
     }
     match cli.command {
-        Some(Commands::Init { toolchain }) => Config::init(toolchain),
-        Some(Commands::Build) => Config::load(cli.config.as_deref())?.build_image(),
+        Some(Commands::Init) => Config::init(cli.toolchain),
+        Some(Commands::Build) => Config::load(cli.config.as_deref())?
+            .with_toolchain(cli.toolchain)
+            .build_image(),
         Some(Commands::Run) | None => {
             let repository = env::current_dir().wrap_err("cannot determine current directory")?;
-            let config = Config::load(cli.config.as_deref())?;
+            let config = Config::load(cli.config.as_deref())?.with_toolchain(cli.toolchain);
             session::run_session(&config, &repository, cli.yes, cli.no)
         }
     }
