@@ -31,8 +31,6 @@ pub(crate) struct Config {
     pub(crate) downloads: Vec<Download>,
     pub(crate) harness: Harness,
     #[serde(default)]
-    pub(crate) credentials: Credentials,
-    #[serde(default)]
     pub(crate) environment: BTreeMap<String, String>,
     #[serde(default = "default_exclusions")]
     pub(crate) exclusions: Vec<String>,
@@ -88,13 +86,6 @@ pub(crate) struct Download {
     pub(crate) url: String,
     #[serde(default)]
     pub(crate) env: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Credentials {
-    #[serde(default)]
-    pub(crate) opencode: bool,
 }
 
 fn default_exclusions() -> Vec<String> {

@@ -186,8 +186,11 @@ edit = "allow"
 ```toml
 ```
 
-`[credentials]` controls credentials mounted into the container. Currently,
-`opencode = true` mounts the local OpenCode authentication file when it exists.
+Harness-specific persistent data is mounted into the container according to the
+selected harness. For OpenCode, its session database directory is mounted
+read-write so sessions created on the host or in the container are available to
+both. OpenCode credentials can be enabled with `credentials = true` inside the
+`[harness]` table; the authentication file remains read-only.
 
 `[environment]` contains environment variables passed to the container:
 

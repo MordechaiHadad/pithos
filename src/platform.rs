@@ -116,6 +116,11 @@ pub(crate) fn null_device() -> PathBuf {
     null_device_impl()
 }
 
+pub(crate) fn volume_spec(source: &Path, target: &str, read_only: bool) -> String {
+    let mode = if read_only { "ro" } else { "rw" };
+    format!("{}:{target}:{mode}", source.display())
+}
+
 #[cfg(unix)]
 fn null_device_impl() -> PathBuf {
     PathBuf::from("/dev/null")
@@ -332,6 +337,19 @@ mod tests {
     use super::*;
 
     use crate::sandbox::TempDir;
+
+    #[test]
+    fn volume_spec_selects_mutability() {
+        let source = Path::new("/tmp/opencode");
+        assert_eq!(
+            volume_spec(source, "/data", false),
+            "/tmp/opencode:/data:rw"
+        );
+        assert_eq!(
+            volume_spec(source, "/config", true),
+            "/tmp/opencode:/config:ro"
+        );
+    }
 
     #[test]
     fn symlink_round_trip() {

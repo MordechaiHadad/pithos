@@ -1,12 +1,20 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::Config;
+use crate::platform;
 
 pub type Allowlist = BTreeMap<String, Value>;
+
+struct HarnessPaths {
+    data: PathBuf,
+    config: PathBuf,
+    credentials: PathBuf,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "name", rename_all = "kebab-case")]
@@ -16,6 +24,8 @@ pub enum Harness {
         command: Vec<String>,
         #[serde(default)]
         allowlist: Option<Allowlist>,
+        #[serde(default)]
+        credentials: bool,
     },
 }
 
@@ -34,33 +44,42 @@ impl Harness {
 
     pub fn mount(&self, command: &mut Command, config: &Config) -> eyre::Result<()> {
         match self {
-            Self::Opencode { .. } => {
+            Self::Opencode { credentials, .. } => {
+                let paths = self.paths()?;
+                fs::create_dir_all(&paths.data)?;
+                mount_path(
+                    command,
+                    &paths.data,
+                    "/home/node/.local/share/opencode",
+                    false,
+                )?;
+                command.args(["--tmpfs", "/home/node/.local/state/opencode"]);
+                command.args(["--tmpfs", "/home/node/.cache"]);
+                command.args(["--tmpfs", "/home/node/.serena"]);
                 if self.config_required(config) {
-                    // The rootfs is read-only; give the node user writable
-                    // home dirs so MCP servers (serena state, deno cache,
-                    // opencode state) can initialize. Per-directory tmpfs;
-                    // the .local/share/opencode mount is what the ro auth
-                    // file bind sits on top of.
-                    command.args(["--tmpfs", "/home/node/.local/share/opencode"]);
-                    command.args(["--tmpfs", "/home/node/.local/state/opencode"]);
-                    command.args(["--tmpfs", "/home/node/.cache"]);
-                    command.args(["--tmpfs", "/home/node/.serena"]);
-                    mount_if_exists(
-                        command,
-                        "~/.config/opencode",
-                        "/home/node/.config/opencode:ro",
-                    )?;
+                    mount_if_exists(command, &paths.config, "/home/node/.config/opencode", true)?;
                 }
-                if self.credentials_enabled(config) {
+                if *credentials {
                     mount_if_exists(
                         command,
-                        "~/.local/share/opencode/auth.json",
-                        "/home/node/.local/share/opencode/auth.json:ro,Z",
+                        &paths.credentials,
+                        "/home/node/.local/share/opencode/auth.json",
+                        true,
                     )?;
                 }
             }
         }
         Ok(())
+    }
+
+    fn paths(&self) -> eyre::Result<HarnessPaths> {
+        match self {
+            Self::Opencode { .. } => Ok(HarnessPaths {
+                data: data_path("opencode")?,
+                config: home_path(".config/opencode")?,
+                credentials: home_path(".local/share/opencode/auth.json")?,
+            }),
+        }
     }
 
     pub fn environment(&self) -> Vec<(String, String)> {
@@ -77,17 +96,15 @@ impl Harness {
         }
     }
 
-    fn credentials_enabled(&self, config: &Config) -> bool {
+    fn credentials_enabled(&self) -> bool {
         match self {
-            Self::Opencode { .. } => config.credentials.opencode,
+            Self::Opencode { credentials, .. } => *credentials,
         }
     }
 
     fn config_required(&self, config: &Config) -> bool {
         match self {
-            Self::Opencode { allowlist, .. } => {
-                self.credentials_enabled(config) || allowlist.is_some()
-            }
+            Self::Opencode { allowlist, .. } => self.credentials_enabled() || allowlist.is_some(),
         }
     }
 }
@@ -96,16 +113,39 @@ fn default_command() -> Vec<String> {
     vec!["opencode".into(), "/workspace".into()]
 }
 
-fn resolved_source(source: &str) -> eyre::Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| eyre::eyre!("cannot determine home directory"))?;
-    Ok(home.join(source.trim_start_matches("~/")))
+fn data_path(application: &str) -> eyre::Result<PathBuf> {
+    let data_dir =
+        dirs::data_dir().ok_or_else(|| eyre::eyre!("cannot determine harness data directory"))?;
+    Ok(data_dir.join(application))
 }
 
-fn mount_if_exists(command: &mut Command, source: &str, target: &str) -> eyre::Result<()> {
-    let path = resolved_source(source)?;
-    if path.exists() {
-        command.args(["--volume", &format!("{}:{target}", path.display())]);
+fn home_path(relative: &str) -> eyre::Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| eyre::eyre!("cannot determine home directory"))?;
+    Ok(home.join(relative))
+}
+
+fn mount_if_exists(
+    command: &mut Command,
+    source: &Path,
+    target: &str,
+    read_only: bool,
+) -> eyre::Result<()> {
+    if source.exists() {
+        mount_path(command, source, target, read_only)?;
     }
+    Ok(())
+}
+
+fn mount_path(
+    command: &mut Command,
+    source: &Path,
+    target: &str,
+    read_only: bool,
+) -> eyre::Result<()> {
+    command.args([
+        "--volume",
+        &platform::volume_spec(source, target, read_only),
+    ]);
     Ok(())
 }
 
@@ -157,7 +197,7 @@ mod tests {
         )
         .unwrap();
         assert!(config.harness.config_required(&config));
-        assert!(!config.harness.credentials_enabled(&config));
+        assert!(!config.harness.credentials_enabled());
     }
 
     #[test]
@@ -169,18 +209,18 @@ mod tests {
         )
         .unwrap();
         assert!(!config.harness.config_required(&config));
-        assert!(!config.harness.credentials_enabled(&config));
+        assert!(!config.harness.credentials_enabled());
     }
 
     #[test]
-    fn source_paths_resolve_relative_to_home() {
+    fn home_paths_resolve_relative_to_home() {
         let home = dirs::home_dir().unwrap();
         assert_eq!(
-            resolved_source("~/.config/opencode").unwrap(),
+            home_path(".config/opencode").unwrap(),
             home.join(".config/opencode")
         );
         assert_eq!(
-            resolved_source(".config/opencode").unwrap(),
+            home_path(".config/opencode").unwrap(),
             home.join(".config/opencode")
         );
     }
@@ -192,12 +232,11 @@ mod tests {
             [harness]
             name = "opencode"
 
-            [credentials]
-            opencode = true
+            credentials = true
             "#,
         )
         .unwrap();
         assert!(config.harness.config_required(&config));
-        assert!(config.harness.credentials_enabled(&config));
+        assert!(config.harness.credentials_enabled());
     }
 }
