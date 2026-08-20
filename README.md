@@ -17,6 +17,34 @@ from the container settings.
 Network restrictions require nftables support on the host and the OCI hook
 included in `host/`.
 
+On Windows, Pithos runs as a native binary and talks to a Linux podman machine
+(`podman machine init` + `podman machine start`). Everything the binary
+executes is routed through the podman machine or through the `platform`
+module, so no WSL is required on the host side.
+
+## Windows setup
+
+1. Install Podman Desktop or the Podman CLI, then create and start a machine:
+   ```sh
+   podman machine init
+   podman machine start
+   ```
+2. Install the OCI hook and nftables inside the machine so egress caps work.
+   Copy `host/oci-hooks.d/pithos-egress-cap.json` and
+   `host/hooks/pithos-egress-cap.sh` into the machine under
+   `$HOME/.config/containers/oci/hooks.d/`, `chmod +x` the script, and install
+   nftables with the machine's package manager (`sudo apt install nftables`).
+3. Build and run:
+   ```sh
+   pithos build
+   pithos run
+   ```
+
+The hook script reads the ruleset from the `pithos.networking-rules`
+annotation, so it never depends on a host path that a Windows host cannot
+provide. `pithos run` verifies the setup with `podman machine ssh` and prints
+the hook path found inside the machine.
+
 ## Usage
 
 Create a starter configuration:

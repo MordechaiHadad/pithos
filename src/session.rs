@@ -22,7 +22,11 @@ pub(crate) fn run_session(
     let sandbox = TempDir::create("pithos-workspace")?;
     copy_tree(repository, &sandbox.0)?;
     strip_remotes(&sandbox.0)?;
-    let current_user = format!("{}:{}", current_uid(), current_gid());
+    let current_user = format!(
+        "{}:{}",
+        crate::platform::current_uid(),
+        crate::platform::current_gid()
+    );
     let mut command = Command::new("podman");
     command.args([
         "run",
@@ -194,11 +198,7 @@ fn current_branch(sandbox: &Path) -> Result<String> {
 
 fn run_viewer(viewer: &str, repo: &Path) -> Result<()> {
     let command = viewer.replace("{dir}", &repo.display().to_string());
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(&command)
-        .status()
-        .wrap_err("could not run diff_viewer")?;
+    let status = crate::platform::run_shell(&command).wrap_err("could not run diff_viewer")?;
     if !status.success() {
         eprintln!("diff_viewer exited with {status}");
     }
@@ -321,8 +321,8 @@ fn file_diff(source: &Path, sandbox: &Path, relative: &Path) -> Result<Option<St
         fs::symlink_metadata(&sandbox_path).is_ok(),
     ) {
         (true, true) => (source_path, sandbox_path),
-        (true, false) => (source_path, PathBuf::from("/dev/null")),
-        _ => (PathBuf::from("/dev/null"), sandbox_path),
+        (true, false) => (source_path, crate::platform::null_device()),
+        _ => (crate::platform::null_device(), sandbox_path),
     };
     git_diff(&left, &right).map(|diff| diff.map(|diff| clean_headers(&diff, relative)))
 }
@@ -357,25 +357,6 @@ fn clean_headers(diff: &str, relative: &Path) -> String {
         }
     }
     cleaned
-}
-
-fn current_uid() -> String {
-    current_id("-u")
-}
-
-fn current_gid() -> String {
-    current_id("-g")
-}
-
-fn current_id(flag: &str) -> String {
-    Command::new("id")
-        .arg(flag)
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "1000".into())
 }
 
 #[cfg(test)]

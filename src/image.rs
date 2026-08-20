@@ -310,9 +310,24 @@ mod tests {
             assert!(
                 matches!(
                     instruction,
-                    "FROM" | "WORKDIR" | "RUN" | "ENV" | "CMD" | "ARG" | "LABEL"
-                        | "COPY" | "ADD" | "EXPOSE" | "VOLUME" | "USER" | "ENTRYPOINT"
-                        | "SHELL" | "STOPSIGNAL" | "HEALTHCHECK" | "ONBUILD" | "COMMENT"
+                    "FROM"
+                        | "WORKDIR"
+                        | "RUN"
+                        | "ENV"
+                        | "CMD"
+                        | "ARG"
+                        | "LABEL"
+                        | "COPY"
+                        | "ADD"
+                        | "EXPOSE"
+                        | "VOLUME"
+                        | "USER"
+                        | "ENTRYPOINT"
+                        | "SHELL"
+                        | "STOPSIGNAL"
+                        | "HEALTHCHECK"
+                        | "ONBUILD"
+                        | "COMMENT"
                 ),
                 "unexpected instruction {instruction:?} in line {line:?}"
             );

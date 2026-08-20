@@ -10,6 +10,7 @@ mod config;
 mod harness;
 mod image;
 mod networking;
+mod platform;
 mod sandbox;
 mod session;
 

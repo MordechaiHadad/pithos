@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::config::Config;
@@ -95,9 +96,13 @@ fn default_command() -> Vec<String> {
     vec!["opencode".into(), "/workspace".into()]
 }
 
-fn mount_if_exists(command: &mut Command, source: &str, target: &str) -> eyre::Result<()> {
+fn resolved_source(source: &str) -> eyre::Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| eyre::eyre!("cannot determine home directory"))?;
-    let path = home.join(source.trim_start_matches("~/"));
+    Ok(home.join(source.trim_start_matches("~/")))
+}
+
+fn mount_if_exists(command: &mut Command, source: &str, target: &str) -> eyre::Result<()> {
+    let path = resolved_source(source)?;
     if path.exists() {
         command.args(["--volume", &format!("{}:{target}", path.display())]);
     }
@@ -165,6 +170,19 @@ mod tests {
         .unwrap();
         assert!(!config.harness.config_required(&config));
         assert!(!config.harness.credentials_enabled(&config));
+    }
+
+    #[test]
+    fn source_paths_resolve_relative_to_home() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(
+            resolved_source("~/.config/opencode").unwrap(),
+            home.join(".config/opencode")
+        );
+        assert_eq!(
+            resolved_source(".config/opencode").unwrap(),
+            home.join(".config/opencode")
+        );
     }
 
     #[test]

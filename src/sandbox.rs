@@ -46,7 +46,7 @@ fn copy_entry(source: &Path, destination: &Path) -> Result<()> {
     let file_type = fs::symlink_metadata(source)?.file_type();
     if file_type.is_symlink() {
         let target = fs::read_link(source)?;
-        std::os::unix::fs::symlink(target, destination)?;
+        crate::platform::symlink(&target, destination)?;
     } else if file_type.is_file() {
         atomic_copy(source, destination)?;
     } else {
@@ -56,7 +56,10 @@ fn copy_entry(source: &Path, destination: &Path) -> Result<()> {
 }
 
 fn atomic_copy(source: &Path, destination: &Path) -> Result<()> {
-    let file_name = destination.file_name().unwrap_or_default().to_string_lossy();
+    let file_name = destination
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
     let temp = destination.with_file_name(format!(".{file_name}.pithos-tmp"));
     fs::copy(source, &temp)?;
     if let Err(error) = fs::rename(&temp, destination) {
@@ -201,7 +204,7 @@ mod tests {
     fn make_symlink(root: &Path, relative: &str, target: &str) {
         let path = root.join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::os::unix::fs::symlink(target, path).unwrap();
+        crate::platform::symlink(Path::new(target), &path).unwrap();
     }
 
     fn collect_all_relative(root: &Path) -> Vec<PathBuf> {
