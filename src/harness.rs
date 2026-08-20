@@ -5,7 +5,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::config::Config;
 use crate::platform;
 
 pub type Allowlist = BTreeMap<String, Value>;
@@ -42,7 +41,7 @@ impl Harness {
         }
     }
 
-    pub fn mount(&self, command: &mut Command, config: &Config) -> eyre::Result<()> {
+    pub fn mount(&self, command: &mut Command) -> eyre::Result<()> {
         match self {
             Self::Opencode { credentials, .. } => {
                 let paths = self.paths()?;
@@ -56,7 +55,7 @@ impl Harness {
                 command.args(["--tmpfs", "/home/node/.local/state/opencode"]);
                 command.args(["--tmpfs", "/home/node/.cache"]);
                 command.args(["--tmpfs", "/home/node/.serena"]);
-                if self.config_required(config) {
+                if self.config_required() {
                     mount_if_exists(command, &paths.config, "/home/node/.config/opencode", true)?;
                 }
                 if *credentials {
@@ -102,7 +101,7 @@ impl Harness {
         }
     }
 
-    fn config_required(&self, config: &Config) -> bool {
+    fn config_required(&self) -> bool {
         match self {
             Self::Opencode { allowlist, .. } => self.credentials_enabled() || allowlist.is_some(),
         }
@@ -152,6 +151,7 @@ fn mount_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
 
     #[test]
     fn opencode_allowlist_becomes_permission_env() {
@@ -196,7 +196,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert!(config.harness.config_required(&config));
+        assert!(config.harness.config_required());
         assert!(!config.harness.credentials_enabled());
     }
 
@@ -208,7 +208,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert!(!config.harness.config_required(&config));
+        assert!(!config.harness.config_required());
         assert!(!config.harness.credentials_enabled());
     }
 
@@ -236,7 +236,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert!(config.harness.config_required(&config));
+        assert!(config.harness.config_required());
         assert!(config.harness.credentials_enabled());
     }
 }

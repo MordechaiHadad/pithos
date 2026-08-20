@@ -50,7 +50,7 @@ pub(crate) fn run_session(
     for (key, value) in config.harness.environment() {
         command.args(["--env", &format!("{key}={value}")]);
     }
-    config.harness.mount(&mut command, config)?;
+    config.harness.mount(&mut command)?;
     if let Some(networking) = &config.networking {
         networking.apply_to(&mut command)?;
     }
