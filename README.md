@@ -128,9 +128,6 @@ container. It defaults to `/workspace`.
 `toolchains` is a list of supported toolchains to install. Supported values
 are `rust` and `python`.
 
-```toml
-```
-
 The Rust toolchain installs Rust through rustup and rust-analyzer. The Python
 toolchain installs uv, ruff, and pyright.
 
@@ -159,6 +156,7 @@ Specifying uv tools also installs uv even when `python` is not listed in
 build. Each entry has a required `url` and optional environment variables.
 
 ```toml
+downloads = [
     { url = "https://deno.land/install.sh", env = { DENO_INSTALL = "/usr/local" } },
 ]
 ```
@@ -197,9 +195,6 @@ edit = "allow"
 
 `diff_viewer` is an optional command used to review changes. It must contain a
 `{dir}` placeholder, which is replaced with the temporary workspace path.
-
-```toml
-```
 
 Harness-specific persistent data is mounted into the container according to the
 selected harness. For OpenCode, its session database directory is mounted
