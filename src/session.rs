@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use crate::config::Config;
+use crate::registry;
 use crate::sandbox::{TempDir, apply_tree, copy_tree, has_changes};
 
 pub(crate) fn run_session(
@@ -27,6 +28,20 @@ pub(crate) fn run_session(
         crate::platform::current_uid(),
         crate::platform::current_gid()
     );
+    let record = registry::SessionRecord::new(
+        repository,
+        &sandbox.0,
+        &config.image_tag,
+        &config.workspace,
+        &current_user,
+    );
+    record.save()?;
+    println!(
+        "pithos session {}: inspect it live with `pithos shell {}` or open {} in your editor",
+        record.id,
+        record.id,
+        sandbox.0.display()
+    );
     let mut command = Command::new("podman");
     command.args([
         "run",
@@ -37,6 +52,8 @@ pub(crate) fn run_session(
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         "--userns=keep-id",
+        "--name",
+        &record.container_name,
     ]);
     command.args([
         "--volume",
@@ -58,6 +75,7 @@ pub(crate) fn run_session(
         .arg(&config.image_tag)
         .status()
         .wrap_err("could not execute podman run")?;
+    registry::remove(&record.id);
     let changed = has_changes(repository, &sandbox.0, &config.exclusions)?;
     let apply = if auto_yes {
         true

@@ -6,11 +6,13 @@ use std::process::ExitCode;
 
 use crate::config::Config;
 
+mod attach;
 mod config;
 mod harness;
 mod image;
 mod networking;
 mod platform;
+mod registry;
 mod sandbox;
 mod session;
 
@@ -34,6 +36,18 @@ enum Commands {
     Init,
     Build,
     Run,
+    Ps,
+    Shell {
+        session: Option<String>,
+    },
+    Exec {
+        session: Option<String>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    Path {
+        session: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -61,5 +75,9 @@ fn execute() -> Result<()> {
             let config = Config::load(cli.config.as_deref())?.with_toolchain(cli.toolchain);
             session::run_session(&config, &repository, cli.yes, cli.no)
         }
+        Some(Commands::Ps) => attach::ps(),
+        Some(Commands::Shell { session }) => attach::shell(session),
+        Some(Commands::Exec { session, command }) => attach::exec(session, &command),
+        Some(Commands::Path { session }) => attach::print_path(session),
     }
 }

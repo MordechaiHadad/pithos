@@ -98,6 +98,26 @@ pithos --config ./other.toml run
 Without `--config`, Pithos looks for `./pithos.toml` and then the global
 configuration at `$XDG_CONFIG_HOME/pithos/pithos.toml`.
 
+## Inspecting a live session
+
+While `pithos run` is active, the sandbox stays reachable from other
+terminals. Pithos records each running session under
+`$XDG_RUNTIME_DIR/pithos` (or the system temporary directory when unset):
+
+- `pithos ps` lists running sessions with their ids and sandbox paths.
+- `pithos shell [id]` opens an interactive shell inside the running container.
+- `pithos exec [id] -- <command>` runs a single command inside the container.
+- `pithos path [id]` prints the host path of the live workspace.
+
+The id is optional while exactly one session is running.
+
+The container's workspace is a bind mount of a host directory, so any editor
+can open the path printed by `pithos path` and watch the agent's changes land
+in real time without ending the session. Edits saved there are included in
+the review step when the session finishes. Editor plugins can discover
+sessions by watching the registry directory and shell out to `pithos exec`
+for terminal integration.
+
 ## Configuration
 
 The configuration file is TOML. A minimal configuration is:
