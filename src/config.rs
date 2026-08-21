@@ -14,7 +14,7 @@ pub(crate) struct Config {
     pub(crate) workspace: String,
     #[serde(default = "default_image_tag")]
     pub(crate) image_tag: String,
-    #[serde(default)]
+    #[serde(default = "default_install")]
     pub(crate) install: Vec<String>,
     #[serde(default)]
     pub(crate) toolchains: Vec<String>,
@@ -114,6 +114,10 @@ pub(crate) struct Download {
 
 fn default_exclusions() -> Vec<String> {
     vec![]
+}
+
+fn default_install() -> Vec<String> {
+    vec!["git".into(), "gcc".into()]
 }
 
 fn default_base_image() -> String {

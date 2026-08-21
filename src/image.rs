@@ -346,7 +346,7 @@ mod tests {
         assert!(file.contains(
             "ENV MISE_DATA_DIR=/usr/local/share/mise PATH=/usr/local/share/mise/shims:$PATH\n"
         ));
-        assert!(!file.contains("gcc"));
+        assert!(file.contains("apt-get install -y --no-install-recommends 'git' 'gcc'"));
     }
 
     #[test]

@@ -4,7 +4,6 @@ workspace = "/workspace"
 
 exclusions = ["target", ".serena"]
 
-install = ["git"]
 toolchains = ["rust", "python"]
 cargo = ["just"]
 npm = []
@@ -52,4 +51,3 @@ TERM = "xterm-256color"
 # quota = 102400                 # per-session egress budget, KiB (unset = no quota)
 # whitelist = ["proxy.example.com"]   # extra hosts bypassing cap + quota
 # use_default_whitelist = true   # false disables opencode.ai/exa.ai defaults
-
