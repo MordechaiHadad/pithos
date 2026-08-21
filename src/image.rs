@@ -83,6 +83,7 @@ impl Config {
         for download in &self.downloads {
             output.push_str(&format!("RUN {}\n", download.command()));
         }
+        output.push_str("RUN chmod -R a+rwX /tmp\n");
         output.push_str("CMD ");
         output.push_str(&json_command(self.harness.command()));
         output.push('\n');
@@ -405,6 +406,14 @@ mod tests {
         let config: Config = toml::from_str("[harness]\nname = \"opencode\"").unwrap();
         let file = config.containerfile();
         assert!(!file.contains("uv"));
+    }
+
+    #[test]
+    fn containerfile_opens_tmp_to_all_users() {
+        let config: Config = toml::from_str("[harness]\nname = \"opencode\"").unwrap();
+        let file = config.containerfile();
+        let chmod = file.find("RUN chmod -R a+rwX /tmp\n").unwrap();
+        assert!(chmod < file.find("CMD ").unwrap());
     }
 
     #[test]
