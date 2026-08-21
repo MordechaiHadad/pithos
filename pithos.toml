@@ -5,7 +5,7 @@ workspace = "/workspace"
 exclusions = ["target", ".serena"]
 
 install = ["git"]
-toolchains = ["rust"]
+toolchains = ["rust", "python"]
 cargo = ["just"]
 npm = []
 bun = []
@@ -15,6 +15,13 @@ downloads = [
 ]
 
 diff_viewer = "nvim -c \"Neotree git_status dir={dir}\""
+
+[toolchain.rust]
+install = ["gcc", "libc6-dev"]
+mise = ["rust", "rust-analyzer"]
+
+[toolchain.python]
+mise = ["python", "uv"]
 
 [harness]
 name = "opencode"

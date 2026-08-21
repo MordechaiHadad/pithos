@@ -75,9 +75,15 @@ impl Config {
         }
         let defs = self.merged_toolchains();
         let selected: BTreeSet<String> = self.expanded_selection(&defs)?.into_iter().collect();
-        for name in self.wanted_names(&defs)? {
-            let def = &defs[&name];
-            output.push_str(&def.containerfile_block(selected.contains(&name)));
+        let wanted = self.expanded_selection(&defs)?;
+        if !self.mise.is_empty() || wanted.iter().any(|name| !defs[name].mise.is_empty()) {
+            output.push_str(
+                "ENV MISE_DATA_DIR=/usr/local/share/mise PATH=/usr/local/share/mise/shims:$PATH\n",
+            );
+        }
+        for name in &wanted {
+            let def = &defs[name];
+            output.push_str(&def.containerfile_block(selected.contains(name)));
         }
         if let Some(line) = install_line("cargo install", "", &self.cargo) {
             output.push_str(&line);
@@ -97,6 +103,9 @@ impl Config {
         }
         for download in &self.downloads {
             output.push_str(&format!("RUN {}\n", download.command()));
+        }
+        if let Some(line) = mise_install_lines(&self.mise) {
+            output.push_str(&line);
         }
         output.push_str("RUN chmod -R a+rwX /tmp\n");
         output.push_str("CMD ");
@@ -127,6 +136,9 @@ impl ToolchainDef {
         }
         for command in &self.run {
             block.push_str(&format!("RUN {command}\n"));
+        }
+        if let Some(line) = mise_install_lines(&self.mise) {
+            block.push_str(&line);
         }
         if selected {
             for command in &self.extra {
@@ -169,6 +181,19 @@ fn uv_install_lines(tool: &UvTool) -> String {
         lines.push_str(&format!("RUN {run}\n"));
     }
     lines
+}
+
+fn mise_install_lines(items: &[String]) -> Option<String> {
+    if items.is_empty() {
+        return None;
+    }
+    let quoted = items
+        .iter()
+        .map(|item| shell_quote(item))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let bootstrap = "(command -v mise >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/* && curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh))";
+    Some(format!("RUN {bootstrap} && mise use -g --yes {quoted}\n"))
 }
 
 impl Download {
@@ -235,6 +260,11 @@ mod tests {
 
                 [harness]
                 name = "opencode"
+
+                [toolchain.rust]
+                install = ["gcc", "libc6-dev"]
+                mise = ["rust"]
+                extra = ["mise use -g --yes 'rust-analyzer'"]
                 "#,
             )
             .unwrap()
@@ -247,6 +277,10 @@ mod tests {
 
                 [harness]
                 name = "opencode"
+
+                [toolchain.python]
+                mise = ["python", "uv"]
+                extra = ["mise use -g --yes 'ruff'", "npm install --global pyright"]
                 "#,
             )
             .unwrap()
@@ -284,26 +318,116 @@ mod tests {
     }
 
     #[test]
-    fn cargo_block_installs_rustup_then_crates() {
+    fn cargo_block_is_a_dumb_pipe_without_a_provider() {
         let file = Config::with_cargo().rendered();
-        assert!(file.contains("ENV CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH RUSTUP_HOME=/usr/local/rustup"));
-        assert!(file.contains("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y"));
         assert!(file.contains("RUN cargo install 'just'\n"));
+        assert!(!file.contains("mise use -g"));
+        assert!(!file.contains("gcc"));
+    }
+
+    #[test]
+    fn user_defined_rust_block_precedes_global_cargo_install() {
+        let config: Config = toml::from_str(
+            r#"
+            toolchains = ["rust"]
+            cargo = ["just"]
+
+            [harness]
+            name = "opencode"
+
+            [toolchain.rust]
+            install = ["gcc", "libc6-dev"]
+            mise = ["rust"]
+            "#,
+        )
+        .unwrap();
+        let file = config.rendered();
+        let rust = file.find("mise use -g --yes 'rust'\n").unwrap();
+        let install = file.find("RUN cargo install 'just'\n").unwrap();
+        assert!(rust < install);
+    }
+
+    #[test]
+    fn mise_block_bootstraps_mise_then_installs_tools() {
+        let config: Config = toml::from_str(
+            r#"
+            mise = ["neovim", "lua-language-server"]
+
+            [harness]
+            name = "opencode"
+            "#,
+        )
+        .unwrap();
+        let file = config.rendered();
         assert!(file.contains(
-            "apt-get install -y --no-install-recommends 'curl' 'ca-certificates' 'gcc' 'libc6-dev'"
+            "ENV MISE_DATA_DIR=/usr/local/share/mise PATH=/usr/local/share/mise/shims:$PATH"
         ));
+        assert!(file.contains("(command -v mise >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/* && curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh)) && mise use -g --yes 'neovim' 'lua-language-server'\n"));
+    }
+
+    #[test]
+    fn mise_block_absent_when_no_tools() {
+        let config: Config = toml::from_str("[harness]\nname = \"opencode\"").unwrap();
+        let file = config.rendered();
+        assert!(!file.contains("mise"));
+    }
+
+    #[test]
+    fn scoped_mise_list_renders_before_extra() {
+        let config: Config = toml::from_str(
+            r#"
+            toolchains = ["lua"]
+
+            [harness]
+            name = "opencode"
+
+            [toolchain.lua]
+            mise = ["stylua"]
+            extra = ["stylua --version"]
+            "#,
+        )
+        .unwrap();
+        let file = config.rendered();
+        assert!(file.contains("mise use -g --yes 'stylua'\nRUN stylua --version\n"));
+    }
+
+    #[test]
+    fn bare_mise_toolchain_installs_runtime_only() {
+        let config: Config = toml::from_str(
+            r#"
+            toolchains = ["runtime"]
+
+            [harness]
+            name = "opencode"
+
+            [toolchain.runtime]
+            install = ["curl", "ca-certificates", "git"]
+            env = { MISE_DATA_DIR = "/usr/local/share/mise", PATH = "/usr/local/share/mise/shims:$PATH" }
+            run = ["curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh"]
+            "#,
+        )
+        .unwrap();
+        let file = config.rendered();
+        assert!(file.contains(
+            "RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh\n"
+        ));
+        assert!(file.contains(
+            "ENV MISE_DATA_DIR=/usr/local/share/mise PATH=/usr/local/share/mise/shims:$PATH"
+        ));
+        assert!(!file.contains("mise use -g"));
     }
 
     #[test]
     fn every_line_is_a_valid_instruction() {
         let config: Config = toml::from_str(
             r#"
-            toolchains = ["rust", "python", "custom"]
+            toolchains = ["custom"]
             install = ["git"]
             cargo = ["just"]
             npm = ["prettier"]
             bun = ["htmx"]
             uv = [{ name = "serena-agent", python = "3.13", run = "serena init" }]
+            mise = ["neovim"]
 
             [harness]
             name = "opencode"
@@ -320,6 +444,7 @@ mod tests {
             npm = ["tsx"]
             bun = ["zip"]
             uv = [{ name = "ruff" }]
+            mise = ["stylua"]
             downloads = [{ url = "https://example.com/custom.sh" }]
             "#,
         )
@@ -361,53 +486,41 @@ mod tests {
     fn cargo_block_absent_when_no_crates() {
         let config: Config = toml::from_str("[harness]\nname = \"opencode\"").unwrap();
         let file = config.rendered();
-        assert!(!file.contains("rustup"));
-    }
-
-    #[test]
-    fn toolchain_flag_installs_toolchain_without_config_entry() {
-        let mut config: Config = toml::from_str("[harness]\nname = \"opencode\"").unwrap();
-        config.with_toolchain(Some("rust".into()));
-        let file = config.rendered();
-        assert!(file.contains("ENV CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH RUSTUP_HOME=/usr/local/rustup"));
-        assert!(file.contains("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y"));
-        assert!(file.contains("RUN rustup component add rust-analyzer\n"));
-        assert_eq!(config.image_tag, "localhost/pithos-opencode:latest-rust");
-    }
-
-    #[test]
-    fn rust_toolchain_installs_rustup_analyzer_and_build_deps() {
-        let file = Config::with_rust_toolchain().rendered();
-        assert!(
-            file.contains(
-                "ENV CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH RUSTUP_HOME=/usr/local/rustup"
-            )
-        );
-        assert!(file.contains("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y"));
-        assert!(file.contains(
-            "apt-get install -y --no-install-recommends 'curl' 'ca-certificates' 'gcc' 'libc6-dev'"
-        ));
-        assert!(file.contains("RUN rustup component add rust-analyzer\n"));
         assert!(!file.contains("cargo install"));
     }
 
     #[test]
-    fn cargo_without_toolchain_skips_rust_analyzer() {
-        let file = Config::with_cargo().rendered();
-        assert!(file.contains("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y"));
-        assert!(file.contains(
-            "apt-get install -y --no-install-recommends 'curl' 'ca-certificates' 'gcc' 'libc6-dev'"
-        ));
-        assert!(!file.contains("rust-analyzer"));
+    fn toolchain_flag_selects_user_defined_toolchain_and_retags() {
+        let mut config: Config = toml::from_str(
+            r#"
+            [harness]
+            name = "opencode"
+
+            [toolchain.lua]
+            mise = ["lua"]
+            "#,
+        )
+        .unwrap();
+        config.with_toolchain(Some("lua".into()));
+        let file = config.rendered();
+        assert!(file.contains("mise use -g --yes 'lua'\n"));
+        assert_eq!(config.image_tag, "localhost/pithos-opencode:latest-lua");
     }
 
     #[test]
-    fn python_toolchain_installs_uv_ruff_and_pyright() {
+    fn rust_toolchain_installs_mise_rust_analyzer_and_build_deps() {
+        let file = Config::with_rust_toolchain().rendered();
+        assert!(file.contains("mise use -g --yes 'rust'\n"));
+        assert!(file.contains("apt-get install -y --no-install-recommends 'gcc' 'libc6-dev'"));
+        assert!(file.contains("RUN mise use -g --yes 'rust-analyzer'\n"));
+        assert!(!file.contains("cargo install"));
+    }
+
+    #[test]
+    fn python_toolchain_installs_python_uv_ruff_and_pyright() {
         let file = Config::with_python_toolchain().rendered();
-        assert!(file.contains(
-            "RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh"
-        ));
-        assert!(file.contains("RUN uv tool install ruff\n"));
+        assert!(file.contains("mise use -g --yes 'python' 'uv'\n"));
+        assert!(file.contains("RUN mise use -g --yes 'ruff'\n"));
         assert!(file.contains("RUN npm install --global pyright\n"));
     }
 
@@ -421,15 +534,31 @@ mod tests {
 
     #[test]
     fn uv_block_installs_uv_and_tools() {
-        let file = Config::with_uv().rendered();
+        let config: Config = toml::from_str(
+            r#"
+            toolchains = ["python"]
+
+            [[uv]]
+            name = "serena-agent"
+            python = "3.13"
+            run = "serena init"
+
+            [[uv]]
+            name = "plain-tool"
+
+            [harness]
+            name = "opencode"
+
+            [toolchain.python]
+            mise = ["python", "uv"]
+            "#,
+        )
+        .unwrap();
+        let file = config.rendered();
+        assert!(file.contains("mise use -g --yes 'python' 'uv'\n"));
         assert!(file.contains(
-            "RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh"
+            "ENV MISE_DATA_DIR=/usr/local/share/mise PATH=/usr/local/share/mise/shims:$PATH"
         ));
-        assert!(
-            file.contains(
-                "ENV PATH=/usr/local/bin:$PATH UV_PYTHON_INSTALL_DIR=/usr/local/uv/python UV_TOOL_BIN_DIR=/usr/local/bin UV_TOOL_DIR=/usr/local/uv/tools"
-            )
-        );
         assert!(
             file.contains("RUN uv tool install 'serena-agent' --python '3.13'\nRUN serena init")
         );
@@ -478,22 +607,31 @@ mod tests {
         .unwrap();
         let file = config.rendered();
         assert!(file.contains("RUN install-go\nRUN go version\n"));
+    }
 
-        let implied: Config = toml::from_str(
+    #[test]
+    fn extra_steps_skipped_for_undefined_selection() {
+        let config: Config = toml::from_str(
             r#"
-            toolchains = ["rustlike"]
+            toolchains = ["golang"]
 
             [harness]
             name = "opencode"
 
-            [toolchain.rustlike]
-            cargo = ["just"]
+            [toolchain.golang]
+            run = ["install-go"]
+            extra = ["go version"]
+
+            [toolchain.other]
+            run = ["install-other"]
+            extra = ["other --version"]
             "#,
         )
         .unwrap();
-        let file = implied.rendered();
-        assert!(file.contains("RUN cargo install 'just'\n"));
-        assert!(!file.contains("rust-analyzer"));
+        let file = config.rendered();
+        assert!(file.contains("RUN install-go\nRUN go version\n"));
+        assert!(!file.contains("install-other"));
+        assert!(!file.contains("other --version"));
     }
 
     #[test]
@@ -533,6 +671,10 @@ mod tests {
             [toolchain.fullstack]
             includes = ["rust", "web"]
 
+            [toolchain.rust]
+            mise = ["rust"]
+            extra = ["mise use -g --yes 'rust-analyzer'"]
+
             [toolchain.web]
             run = ["npm install --global typescript"]
             extra = ["tsc --version"]
@@ -540,37 +682,10 @@ mod tests {
         )
         .unwrap();
         let file = config.rendered();
-        assert!(file.contains("RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y\n"));
-        assert!(file.contains("RUN rustup component add rust-analyzer\n"));
+        assert!(file.contains("mise use -g --yes 'rust'\n"));
+        assert!(file.contains("RUN mise use -g --yes 'rust-analyzer'\n"));
         assert!(file.contains("RUN npm install --global typescript\n"));
         assert!(file.contains("RUN tsc --version\n"));
-    }
-
-    #[test]
-    fn member_scoped_uv_implies_python() {
-        let config: Config = toml::from_str(
-            r#"
-            toolchains = ["meta"]
-
-            [harness]
-            name = "opencode"
-
-            [toolchain.meta]
-            includes = ["tools"]
-
-            [toolchain.tools]
-            uv = [{ name = "ruff" }]
-            "#,
-        )
-        .unwrap();
-        let defs = config.merged_toolchains();
-        assert_eq!(
-            config.wanted_names(&defs).unwrap(),
-            ["meta", "tools", "python"]
-        );
-        let file = config.rendered();
-        assert!(file.contains("RUN curl -LsSf https://astral.sh/uv/install.sh"));
-        assert!(!file.contains("pyright"));
     }
 
     #[test]

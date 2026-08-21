@@ -30,6 +30,8 @@ pub(crate) struct Config {
     pub(crate) uv: Vec<UvTool>,
     #[serde(default)]
     pub(crate) downloads: Vec<Download>,
+    #[serde(default)]
+    pub(crate) mise: Vec<String>,
     pub(crate) harness: Harness,
     #[serde(skip, default)]
     pub(crate) global_toolchains: BTreeMap<String, ToolchainDef>,
@@ -57,6 +59,8 @@ pub(crate) struct ToolchainDef {
     #[serde(default)]
     pub(crate) run: Vec<String>,
     #[serde(default)]
+    pub(crate) mise: Vec<String>,
+    #[serde(default)]
     pub(crate) extra: Vec<String>,
     #[serde(default)]
     pub(crate) cargo: Vec<String>,
@@ -68,55 +72,6 @@ pub(crate) struct ToolchainDef {
     pub(crate) uv: Vec<UvTool>,
     #[serde(default)]
     pub(crate) downloads: Vec<Download>,
-}
-
-pub(crate) fn builtin_toolchains() -> BTreeMap<String, ToolchainDef> {
-    let mut defs = BTreeMap::new();
-    defs.insert("rust".into(), rust_preset());
-    defs.insert("python".into(), python_preset());
-    defs
-}
-
-fn rust_preset() -> ToolchainDef {
-    ToolchainDef {
-        env: BTreeMap::from([
-            ("RUSTUP_HOME".into(), "/usr/local/rustup".into()),
-            ("CARGO_HOME".into(), "/usr/local/cargo".into()),
-            ("PATH".into(), "/usr/local/cargo/bin:$PATH".into()),
-        ]),
-        install: vec![
-            "curl".into(),
-            "ca-certificates".into(),
-            "gcc".into(),
-            "libc6-dev".into(),
-        ],
-        run: vec!["curl -fsSL https://sh.rustup.rs | sh -s -- -y".into()],
-        extra: vec!["rustup component add rust-analyzer".into()],
-        ..Default::default()
-    }
-}
-
-fn python_preset() -> ToolchainDef {
-    ToolchainDef {
-        install: vec!["curl".into(), "ca-certificates".into()],
-        run: vec![
-            "curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh".into(),
-        ],
-        env: BTreeMap::from([
-            ("PATH".into(), "/usr/local/bin:$PATH".into()),
-            ("UV_TOOL_BIN_DIR".into(), "/usr/local/bin".into()),
-            ("UV_TOOL_DIR".into(), "/usr/local/uv/tools".into()),
-            (
-                "UV_PYTHON_INSTALL_DIR".into(),
-                "/usr/local/uv/python".into(),
-            ),
-        ]),
-        extra: vec![
-            "uv tool install ruff".into(),
-            "npm install --global pyright".into(),
-        ],
-        ..Default::default()
-    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -205,7 +160,7 @@ impl Config {
     }
 
     pub(crate) fn merged_toolchains(&self) -> BTreeMap<String, ToolchainDef> {
-        let mut defs = builtin_toolchains();
+        let mut defs = BTreeMap::new();
         defs.extend(
             self.global_toolchains
                 .iter()
@@ -265,45 +220,6 @@ impl Config {
         Ok(out)
     }
 
-    fn implied_names(
-        selected: &[String],
-        defs: &BTreeMap<String, ToolchainDef>,
-        global_cargo: &[String],
-        global_uv: &[UvTool],
-    ) -> Vec<String> {
-        let mut wanted = selected.to_vec();
-        let mut index = 0;
-        while index < wanted.len() {
-            let name = wanted[index].clone();
-            if let Some(def) = defs.get(&name) {
-                for (implied, needed) in [
-                    ("rust", !def.cargo.is_empty()),
-                    ("python", !def.uv.is_empty()),
-                ] {
-                    if needed && !wanted.iter().any(|existing| existing == implied) {
-                        wanted.push(implied.to_owned());
-                    }
-                }
-            }
-            index += 1;
-        }
-        if !global_cargo.is_empty() && !wanted.iter().any(|existing| existing == "rust") {
-            wanted.push("rust".into());
-        }
-        if !global_uv.is_empty() && !wanted.iter().any(|existing| existing == "python") {
-            wanted.push("python".into());
-        }
-        wanted
-    }
-
-    pub(crate) fn wanted_names(
-        &self,
-        defs: &BTreeMap<String, ToolchainDef>,
-    ) -> Result<Vec<String>> {
-        let selected = self.expanded_selection(defs)?;
-        Ok(Self::implied_names(&selected, defs, &self.cargo, &self.uv))
-    }
-
     fn validate(&self) -> Result<()> {
         if self.harness.command().is_empty() {
             bail!("harness.command cannot be empty")
@@ -317,8 +233,7 @@ impl Config {
                 bail!("invalid toolchain name \"{name}\": use letters, digits, '-', '_', '.'")
             }
         }
-        self.expanded_selection(&defs)?;
-        for name in self.wanted_names(&defs)? {
+        for name in self.expanded_selection(&defs)? {
             let def = &defs[&name];
             if def.uv.iter().any(|tool| tool.name.is_empty()) {
                 bail!("uv tool name cannot be empty (toolchain {name})")
@@ -361,7 +276,7 @@ fn starter_config(toolchain: Option<String>) -> String {
         .map(|name| format!("toolchains = [\"{name}\"]\n"))
         .unwrap_or_default();
     format!(
-        "base_image = \"node:22-bookworm-slim\"\nimage_tag = \"localhost/pithos-opencode:latest\"\nworkspace = \"/workspace\"\n\n{toolchains}\n# Define custom toolchains or override built-ins (\"rust\", \"python\"):\n# [toolchain.example]\n# install = [\"curl\"]\n# env = {{ PATH = \"/opt/example/bin:$PATH\" }}\n# run = [\"curl -fsSL https://example.com/install.sh | sh\"]\n# extra = [\"example --version\"]\n\n[harness]\nname = \"opencode\"\ncommand = [\"opencode\", \"/workspace\"]\n"
+        "base_image = \"node:22-bookworm-slim\"\nimage_tag = \"localhost/pithos-opencode:latest\"\nworkspace = \"/workspace\"\n\n{toolchains}\n# Install tools from the mise registry (supports name@version and backend:name):\n# mise = [\"neovim\", \"lua-language-server\"]\n# Define your own toolchains:\n# [toolchain.example]\n# install = [\"curl\"]\n# env = {{ PATH = \"/opt/example/bin:$PATH\" }}\n# run = [\"curl -fsSL https://example.com/install.sh | sh\"]\n# extra = [\"example --version\"]\n\n[harness]\nname = \"opencode\"\ncommand = [\"opencode\", \"/workspace\"]\n"
     )
 }
 
@@ -464,8 +379,8 @@ mod tests {
     }
 
     #[test]
-    fn merged_toolchains_include_builtins_and_project_definitions() {
-        let config: Config = toml::from_str(
+    fn merged_toolchains_merge_library_and_project_definitions() {
+        let mut config: Config = toml::from_str(
             r#"
             [harness]
             name = "opencode"
@@ -475,28 +390,16 @@ mod tests {
             "#,
         )
         .unwrap();
+        config.global_toolchains.insert(
+            "vim".into(),
+            ToolchainDef {
+                run: vec!["install-vim".into()],
+                ..Default::default()
+            },
+        );
         let defs = config.merged_toolchains();
-        assert!(defs.contains_key("rust"));
-        assert!(defs.contains_key("python"));
+        assert_eq!(defs["vim"].run, ["install-vim"]);
         assert_eq!(defs["golang"].run, ["install-go"]);
-    }
-
-    #[test]
-    fn project_definitions_override_builtins_silently() {
-        let config: Config = toml::from_str(
-            r#"
-            [harness]
-            name = "opencode"
-
-            [toolchain.rust]
-            run = ["custom-rust-installer"]
-            "#,
-        )
-        .unwrap();
-        let defs = config.merged_toolchains();
-        assert_eq!(defs["rust"].run, ["custom-rust-installer"]);
-        assert!(defs["rust"].extra.is_empty());
-        assert!(!defs.contains_key("unused") || defs["rust"].env.is_empty());
     }
 
     #[test]
@@ -507,6 +410,9 @@ mod tests {
 
             [harness]
             name = "opencode"
+
+            [toolchain.golang]
+            run = ["install-go"]
             "#,
         )
         .unwrap()
@@ -517,10 +423,7 @@ mod tests {
             message.contains("unknown toolchain \"nosuch\""),
             "{message}"
         );
-        assert!(
-            message.contains("python") && message.contains("rust"),
-            "{message}"
-        );
+        assert!(message.contains("golang"), "{message}");
     }
 
     #[test]
@@ -545,24 +448,6 @@ mod tests {
     }
 
     #[test]
-    fn scoped_cargo_implies_rust_wanted() {
-        let config: Config = toml::from_str(
-            r#"
-            toolchains = ["mine"]
-
-            [harness]
-            name = "opencode"
-
-            [toolchain.mine]
-            cargo = ["just"]
-            "#,
-        )
-        .unwrap();
-        let defs = config.merged_toolchains();
-        assert_eq!(config.wanted_names(&defs).unwrap(), ["mine", "rust"]);
-    }
-
-    #[test]
     fn includes_expand_transitively_in_order() {
         let config: Config = toml::from_str(
             r#"
@@ -574,18 +459,20 @@ mod tests {
             [toolchain.fullstack]
             includes = ["rust", "web"]
 
+            [toolchain.rust]
+            run = ["install-rust"]
+
             [toolchain.web]
             includes = ["python"]
+
+            [toolchain.python]
+            run = ["install-python"]
             "#,
         )
         .unwrap();
         let defs = config.merged_toolchains();
         assert_eq!(
             config.expanded_selection(&defs).unwrap(),
-            ["fullstack", "rust", "web", "python"]
-        );
-        assert_eq!(
-            config.wanted_names(&defs).unwrap(),
             ["fullstack", "rust", "web", "python"]
         );
     }

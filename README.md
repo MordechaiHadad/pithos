@@ -85,7 +85,7 @@ pithos build --toolchain python
 ```
 
 `--toolchain` (or `-t`) accepts any toolchain name that resolves to a
-definition (built-in, global library, or project configuration) and overrides
+definition (global library or project configuration) and overrides
 the `toolchains` key in the configuration. It uses an image tag suffixed with
 the toolchain name, so `pithos run --toolchain rust` reuses an existing
 `...:latest-rust` image when it already matches the configuration.
@@ -146,16 +146,19 @@ container. It defaults to `/workspace`.
 
 `install` is a list of Debian packages installed with `apt-get`.
 
-`toolchains` is a list of toolchain names to install. Two built-in toolchains
-ship with Pithos:
+`toolchains` is a list of toolchain names to install. Every toolchain is
+user-defined: a name must resolve to a `[toolchain.NAME]` table in the project
+configuration or in the global toolchain library described below. For example,
+a Rust toolchain provisioned through mise looks like:
 
-- `rust` installs Rust through rustup plus rust-analyzer.
-- `python` installs uv, ruff, and pyright.
+```toml
+toolchains = ["rust"]
 
-Any other name must be defined in a `[toolchain.NAME]` table, either in the
-project configuration or in the global toolchain library described below.
-Defining `[toolchain.rust]` or `[toolchain.python]` replaces the built-in
-definition silently.
+[toolchain.rust]
+install = ["gcc", "libc6-dev"]
+mise = ["rust"]
+extra = ["mise use -g --yes 'rust-analyzer'"]
+```
 
 ```toml
 toolchains = ["golang"]
@@ -169,8 +172,8 @@ run = [
 ```
 
 A `[toolchain.NAME]` table accepts the same installation keys as the global
-lists below (`install`, `cargo`, `npm`, `bun`, `uv`, `downloads`) scoped to
-that toolchain, plus:
+lists below (`install`, `cargo`, `npm`, `bun`, `uv`, `downloads`, `mise`)
+scoped to that toolchain, plus:
 
 `includes` is a list of other toolchain names installed whenever this one is.
 Expansion is transitive, and included toolchains behave as if they were listed
@@ -202,7 +205,7 @@ explicitly listed in `toolchains` or selected with `--toolchain`.
 Toolchains shared across projects live in
 `$XDG_CONFIG_HOME/pithos/toolchains.toml`. The file contains only
 `[toolchain.NAME]` tables using the same schema. Project definitions take
-precedence over the library, which takes precedence over the built-ins.
+precedence over the library.
 
 `cargo` is a list of Rust crates installed with `cargo install`. Specifying
 Cargo packages also installs Rust even when `rust` is not listed in
@@ -235,6 +238,20 @@ downloads = [
 ```
 
 Only use download URLs that you trust.
+
+`mise` is a list of tools installed through [mise](https://mise.jdx.dev). Each
+entry uses the spec forms mise accepts: a registry shorthand with an optional
+version (`neovim`, `node@22`) or a full backend name
+(`aqua:LuaLS/lua-language-server`, `npm:pyright`, `cargo:just`). Tools are
+registered with `mise use -g --yes` and their shims are placed on the
+container's `PATH`, so they resolve both during the image build and inside
+sessions. Prefer this key for tools covered by the mise registry and use
+`downloads` for raw installer scripts that mise cannot express. Legacy
+plugin-based backends need `git`, which this key does not install implicitly.
+
+```toml
+mise = ["neovim", "lua-language-server", "node@22"]
+```
 
 ### Harness settings
 
