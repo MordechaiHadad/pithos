@@ -50,7 +50,9 @@ pub(crate) fn print_path(session_id: Option<String>) -> Result<()> {
 }
 
 fn resolve_session(session_id: Option<&str>) -> Result<SessionRecord> {
-    registry::resolve(&registry::prune()?, session_id)
+    let session = registry::resolve(&registry::prune()?, session_id)?;
+    tracing::debug!(id = %session.id, container = %session.container_name, "resolved session");
+    Ok(session)
 }
 
 fn push_target(command: &mut Command, session: &SessionRecord) {
@@ -60,7 +62,9 @@ fn push_target(command: &mut Command, session: &SessionRecord) {
 }
 
 fn run_foreground(mut command: Command, label: &str) -> Result<()> {
+    tracing::debug!(label, ?command, "running foreground command");
     let status = command.status().wrap_err("could not execute podman exec")?;
+    tracing::trace!(label, %status, "foreground command finished");
     if status.success() {
         Ok(())
     } else {

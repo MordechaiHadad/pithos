@@ -60,11 +60,19 @@ impl Networking {
         rules
     }
 
+    #[tracing::instrument(skip(self, command))]
     pub(crate) fn apply_to(&self, command: &mut Command) -> Result<()> {
         crate::platform::verify_networking_support()?;
         let hosts = self.effective_whitelist();
         let (v4, v6) = resolve_hosts(&hosts);
         let rules = serialize_rules(&self.render_rules(&v4, &v6));
+        tracing::debug!(
+            whitelist = ?hosts,
+            v4_addresses = v4.len(),
+            v6_addresses = v6.len(),
+            rules_bytes = rules.len(),
+            "applying egress networking rules"
+        );
         command.args(["--annotation", "pithos.networking=1"]);
         command.args(["--annotation", &format!("pithos.networking-rules={rules}")]);
         Ok(())
@@ -105,6 +113,7 @@ pub(crate) fn resolve_hosts(hosts: &[String]) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) 
                 continue;
             }
         };
+        tracing::trace!(host, addresses = addrs.len(), "resolved whitelist host");
         for addr in addrs {
             match addr.ip() {
                 IpAddr::V4(ip) => v4.push(ip),

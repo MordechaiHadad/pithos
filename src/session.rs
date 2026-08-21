@@ -8,6 +8,7 @@ use crate::config::Config;
 use crate::registry;
 use crate::sandbox::{TempDir, apply_tree, copy_tree, has_changes};
 
+#[tracing::instrument(skip_all, fields(repository = %repository.display()))]
 pub(crate) fn run_session(
     config: &Config,
     repository: &Path,
@@ -17,7 +18,9 @@ pub(crate) fn run_session(
     if !repository.join(".git").exists() {
         bail!("current directory is not a git repository")
     }
-    if !config.image_up_to_date()? {
+    let up_to_date = config.image_up_to_date()?;
+    tracing::debug!(up_to_date, "image freshness check");
+    if !up_to_date {
         config.build_image()?;
     }
     let sandbox = TempDir::create("pithos-workspace")?;
@@ -71,12 +74,15 @@ pub(crate) fn run_session(
     if let Some(networking) = &config.networking {
         networking.apply_to(&mut command)?;
     }
+    tracing::debug!(?command, "starting harness container");
     let status = command
         .arg(&config.image_tag)
         .status()
         .wrap_err("could not execute podman run")?;
+    tracing::debug!(%status, "harness container exited");
     registry::remove(&record.id);
     let changed = has_changes(repository, &sandbox.0, &config.exclusions)?;
+    tracing::trace!(changed = changed.len(), "change detection finished");
     let apply = if auto_yes {
         true
     } else if auto_no || changed.is_empty() {
@@ -86,6 +92,7 @@ pub(crate) fn run_session(
         let mut session_view = None;
         review(&changed, repository, &sandbox.0, config, &mut session_view)?
     };
+    tracing::debug!(apply, "review decision");
     if apply {
         apply_tree(&sandbox.0, repository, &config.exclusions)?;
     }
@@ -236,6 +243,7 @@ fn strip_remotes(repository: &Path) -> Result<()> {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<Output> {
+    tracing::trace!(args = args.join(" "), "running git");
     Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -346,6 +354,7 @@ fn file_diff(source: &Path, sandbox: &Path, relative: &Path) -> Result<Option<St
 }
 
 fn git_diff(left: &Path, right: &Path) -> Result<Option<String>> {
+    tracing::trace!(left = %left.display(), right = %right.display(), "running git diff");
     let output = Command::new("git")
         .args(["diff", "--no-index", "--no-color", "--"])
         .arg(left)

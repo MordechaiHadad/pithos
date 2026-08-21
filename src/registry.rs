@@ -66,6 +66,7 @@ pub(crate) fn prune() -> Result<Vec<SessionRecord>> {
     let mut live = Vec::with_capacity(sessions.len());
     for session in sessions {
         if is_stale(&session, &running) {
+            tracing::debug!(id = %session.id, "pruning stale session record");
             remove(&session.id);
         } else {
             live.push(session);
@@ -122,7 +123,9 @@ fn save_in(dir: &Path, record: &SessionRecord) -> Result<()> {
     fs::create_dir_all(dir).wrap_err("cannot create pithos runtime directory")?;
     let contents =
         serde_json::to_string_pretty(record).wrap_err("cannot serialize session record")?;
-    fs::write(record_path(dir, &record.id), contents).wrap_err("cannot write session record")
+    fs::write(record_path(dir, &record.id), contents).wrap_err("cannot write session record")?;
+    tracing::debug!(id = %record.id, "saved session record");
+    Ok(())
 }
 
 fn list_in(dir: &Path) -> Vec<SessionRecord> {
@@ -150,6 +153,7 @@ fn list_in(dir: &Path) -> Vec<SessionRecord> {
 }
 
 fn remove_in(dir: &Path, id: &str) {
+    tracing::debug!(id, "removing session record");
     let _ = fs::remove_file(record_path(dir, id));
 }
 
@@ -158,6 +162,7 @@ fn record_path(dir: &Path, id: &str) -> PathBuf {
 }
 
 fn running_container_names() -> Result<Vec<String>> {
+    tracing::trace!("querying running podman containers");
     let output = Command::new("podman")
         .args(["ps", "--format", "{{.Names}}"])
         .output()

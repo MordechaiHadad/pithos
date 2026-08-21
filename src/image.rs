@@ -6,9 +6,11 @@ use crate::config::{Config, Download, Toolchain};
 use crate::sandbox::TempDir;
 
 impl Config {
+    #[tracing::instrument(skip(self), fields(image_tag = %self.image_tag))]
     pub(crate) fn build_image(&self) -> Result<()> {
         let context = TempDir::create("pithos-build")?;
         let config_digest = self.digest();
+        tracing::debug!(config_digest, "building image");
         fs::write(context.0.join("Containerfile"), self.containerfile())
             .wrap_err("cannot write Containerfile")?;
         let status = Command::new("podman")
@@ -24,6 +26,7 @@ impl Config {
             .arg(&context.0)
             .status()
             .wrap_err("could not execute podman build")?;
+        tracing::debug!(%status, "podman build finished");
         if !status.success() {
             bail!("podman build failed")
         }
@@ -42,10 +45,13 @@ impl Config {
             .output()
             .wrap_err("could not inspect podman image")?;
         if !output.status.success() {
+            tracing::trace!(image_tag = %self.image_tag, "image not present yet");
             return Ok(false);
         }
         let stored = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        Ok(stored == self.digest())
+        let up_to_date = stored == self.digest();
+        tracing::trace!(stored_digest = %stored, local_digest = %self.digest(), up_to_date, "image digest comparison");
+        Ok(up_to_date)
     }
 
     fn digest(&self) -> String {

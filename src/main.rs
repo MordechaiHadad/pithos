@@ -1,8 +1,9 @@
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use eyre::{Result, WrapErr, bail};
 use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use tracing_subscriber::{EnvFilter, prelude::*};
 
 use crate::config::Config;
 
@@ -19,6 +20,9 @@ mod session;
 #[derive(Parser)]
 #[command(name = "pithos", version, about = "Run disposable agent workspaces")]
 struct Cli {
+    /// Increase verbosity (-v for DEBUG, -vv for TRACE, -vvv for global TRACE)
+    #[arg(short = 'v', long = "verbose", action = ArgAction::Count, global = true)]
+    verbose: u8,
     #[arg(short, long)]
     config: Option<PathBuf>,
     #[arg(short = 't', long, global = true)]
@@ -62,6 +66,7 @@ fn main() -> ExitCode {
 
 fn execute() -> Result<()> {
     let cli = Cli::parse();
+    init_tracing(cli.verbose);
     if cli.yes && cli.no {
         bail!("--yes and --no cannot be combined")
     }
@@ -80,4 +85,22 @@ fn execute() -> Result<()> {
         Some(Commands::Exec { session, command }) => attach::exec(session, &command),
         Some(Commands::Path { session }) => attach::print_path(session),
     }
+}
+
+fn init_tracing(verbose: u8) {
+    let env_filter = if verbose > 0 {
+        let crate_name = env!("CARGO_CRATE_NAME");
+        match verbose {
+            1 => EnvFilter::new(format!("{crate_name}=debug")),
+            2 => EnvFilter::new(format!("{crate_name}=trace")),
+            _ => EnvFilter::new("trace"),
+        }
+    } else {
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"))
+    };
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer().with_target(false))
+        .init();
 }

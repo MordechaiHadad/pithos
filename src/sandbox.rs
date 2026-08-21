@@ -43,6 +43,7 @@ pub(crate) fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
 }
 
 fn copy_entry(source: &Path, destination: &Path) -> Result<()> {
+    tracing::trace!(source = %source.display(), destination = %destination.display(), "copying entry");
     let file_type = fs::symlink_metadata(source)?.file_type();
     if file_type.is_symlink() {
         let target = fs::read_link(source)?;
@@ -156,6 +157,7 @@ fn apply_tree_at(
             continue;
         }
         if !source.join(entry.file_name()).exists() {
+            tracing::trace!(path = %child_relative.display(), "removing path missing in sandbox");
             remove_path(&entry.path())?;
         }
     }

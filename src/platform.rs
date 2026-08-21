@@ -135,7 +135,13 @@ fn null_device_impl() -> PathBuf {
 ///
 /// `sh -c` on Unix, `%COMSPEC% /C` on Windows.
 pub(crate) fn run_shell(command: &str) -> io::Result<std::process::ExitStatus> {
-    run_shell_impl(command)
+    tracing::debug!(command, "running shell command");
+    let result = run_shell_impl(command);
+    match &result {
+        Ok(status) => tracing::trace!(command, %status, "shell command finished"),
+        Err(error) => tracing::trace!(command, %error, "shell command failed to start"),
+    }
+    result
 }
 
 #[cfg(unix)]
@@ -233,6 +239,7 @@ fn verify_networking_support_impl() -> Result<()> {
     use std::io::Write;
 
     fn machine_ssh(script: &str) -> Result<std::process::Output> {
+        tracing::debug!(script, "running podman machine ssh");
         let mut child = std::process::Command::new("podman")
             .args(["machine", "ssh", "sh", "-s"])
             .stdin(std::process::Stdio::piped())
