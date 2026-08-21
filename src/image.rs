@@ -76,14 +76,39 @@ impl Config {
         let defs = self.merged_toolchains();
         let selected: BTreeSet<String> = self.expanded_selection(&defs)?.into_iter().collect();
         let wanted = self.expanded_selection(&defs)?;
-        if !self.mise.is_empty() || wanted.iter().any(|name| !defs[name].mise.is_empty()) {
+        let mut providers: Vec<String> = Vec::new();
+        if !self.cargo.is_empty() {
+            providers.push("rust".into());
+        }
+        if !self.npm.is_empty() {
+            providers.push("node".into());
+        }
+        if !self.bun.is_empty() {
+            providers.push("bun".into());
+        }
+        if !self.uv.is_empty() {
+            providers.push("python".into());
+            providers.push("uv".into());
+        }
+        let mut covered: BTreeSet<&String> = self.mise.iter().collect();
+        covered.extend(wanted.iter().flat_map(|name| defs[name].mise.iter()));
+        providers.retain(|provider| !covered.contains(provider));
+        let mut mise_tools = self.mise.clone();
+        mise_tools.extend(providers);
+        if !mise_tools.is_empty() || wanted.iter().any(|name| !defs[name].mise.is_empty()) {
             output.push_str(
                 "ENV MISE_DATA_DIR=/usr/local/share/mise PATH=/usr/local/share/mise/shims:$PATH\n",
             );
         }
+        if !self.uv.is_empty() || wanted.iter().any(|name| !defs[name].uv.is_empty()) {
+            output.push_str("ENV UV_TOOL_BIN_DIR=/usr/local/bin\n");
+        }
         for name in &wanted {
             let def = &defs[name];
             output.push_str(&def.containerfile_block(selected.contains(name)));
+        }
+        if let Some(line) = mise_install_lines(&mise_tools) {
+            output.push_str(&line);
         }
         if let Some(line) = install_line("cargo install", "", &self.cargo) {
             output.push_str(&line);
@@ -91,11 +116,7 @@ impl Config {
         if let Some(line) = install_line("npm install --global", "", &self.npm) {
             output.push_str(&line);
         }
-        if let Some(line) = install_line(
-            "npm install --global bun && bun install --global",
-            "",
-            &self.bun,
-        ) {
+        if let Some(line) = install_line("bun install --global", "", &self.bun) {
             output.push_str(&line);
         }
         for tool in &self.uv {
@@ -103,9 +124,6 @@ impl Config {
         }
         for download in &self.downloads {
             output.push_str(&format!("RUN {}\n", download.command()));
-        }
-        if let Some(line) = mise_install_lines(&self.mise) {
-            output.push_str(&line);
         }
         output.push_str("RUN chmod -R a+rwX /tmp\n");
         output.push_str("CMD ");
@@ -318,11 +336,44 @@ mod tests {
     }
 
     #[test]
-    fn cargo_block_is_a_dumb_pipe_without_a_provider() {
+    fn cargo_block_bootstraps_rust_via_mise() {
         let file = Config::with_cargo().rendered();
         assert!(file.contains("RUN cargo install 'just'\n"));
-        assert!(!file.contains("mise use -g"));
+        let mise = file.find("(command -v mise").unwrap();
+        let rust = file.find("mise use -g --yes 'rust'\n").unwrap();
+        let install = file.find("RUN cargo install 'just'\n").unwrap();
+        assert!(mise < rust && rust < install);
+        assert!(file.contains(
+            "ENV MISE_DATA_DIR=/usr/local/share/mise PATH=/usr/local/share/mise/shims:$PATH\n"
+        ));
         assert!(!file.contains("gcc"));
+    }
+
+    #[test]
+    fn package_lists_infer_providers_before_use() {
+        let config: Config = toml::from_str(
+            r#"
+            mise = ["deno"]
+            cargo = ["just"]
+            bun = ["htmx"]
+            uv = [{ name = "serena-agent", python = "3.13", run = "serena init" }]
+
+            [harness]
+            name = "opencode"
+            "#,
+        )
+        .unwrap();
+        let file = config.rendered();
+        assert!(file.contains("mise use -g --yes 'deno' 'rust' 'bun' 'python' 'uv'\n"));
+        assert!(file.contains("ENV UV_TOOL_BIN_DIR=/usr/local/bin\n"));
+        let mise = file.find("mise use -g --yes 'deno'").unwrap();
+        let uv_env = file.find("ENV UV_TOOL_BIN_DIR=/usr/local/bin\n").unwrap();
+        let cargo = file.find("RUN cargo install 'just'\n").unwrap();
+        let bun = file.find("RUN bun install --global 'htmx'\n").unwrap();
+        let uv_install = file.find("RUN uv tool install 'serena-agent'").unwrap();
+        assert!(mise < cargo);
+        assert!(mise < bun);
+        assert!(uv_env < uv_install && uv_install < file.find("RUN serena init\n").unwrap());
     }
 
     #[test]

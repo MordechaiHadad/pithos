@@ -211,10 +211,11 @@ precedence over the library.
 Cargo packages also installs Rust even when `rust` is not listed in
 `toolchains`.
 
-`npm` is a list of packages installed globally with npm.
+`npm` is a list of packages installed globally with npm. A non-empty list also
+installs Node through mise.
 
 `bun` is a list of packages installed globally with Bun. Bun itself is
-installed when this list is not empty.
+installed through mise when this list is not empty.
 
 `uv` is a list of uv tools. Each entry has a required `name` and optional
 `python` and `run` values.
@@ -226,7 +227,8 @@ uv = [
 ```
 
 Specifying uv tools also installs uv even when `python` is not listed in
-`toolchains`.
+`toolchains`. Their executables are installed in `/usr/local/bin` so commands
+from `run` values are available during the build and in sessions.
 
 `downloads` is a list of shell installer scripts to run during the image
 build. Each entry has a required `url` and optional environment variables.
