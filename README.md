@@ -84,10 +84,11 @@ pithos run --toolchain rust
 pithos build --toolchain python
 ```
 
-`--toolchain` (or `-t`) overrides the `toolchains` key in the configuration and
-uses an image tag suffixed with the toolchain name, so `pithos run --toolchain
-rust` reuses an existing `...:latest-rust` image when it already matches the
-configuration.
+`--toolchain` (or `-t`) accepts any toolchain name that resolves to a
+definition (built-in, global library, or project configuration) and overrides
+the `toolchains` key in the configuration. It uses an image tag suffixed with
+the toolchain name, so `pithos run --toolchain rust` reuses an existing
+`...:latest-rust` image when it already matches the configuration.
 
 An alternate configuration can be selected with the global `--config` option:
 
@@ -145,11 +146,63 @@ container. It defaults to `/workspace`.
 
 `install` is a list of Debian packages installed with `apt-get`.
 
-`toolchains` is a list of supported toolchains to install. Supported values
-are `rust` and `python`.
+`toolchains` is a list of toolchain names to install. Two built-in toolchains
+ship with Pithos:
 
-The Rust toolchain installs Rust through rustup and rust-analyzer. The Python
-toolchain installs uv, ruff, and pyright.
+- `rust` installs Rust through rustup plus rust-analyzer.
+- `python` installs uv, ruff, and pyright.
+
+Any other name must be defined in a `[toolchain.NAME]` table, either in the
+project configuration or in the global toolchain library described below.
+Defining `[toolchain.rust]` or `[toolchain.python]` replaces the built-in
+definition silently.
+
+```toml
+toolchains = ["golang"]
+
+[toolchain.golang]
+install = ["ca-certificates", "curl"]
+env = { PATH = "/usr/local/go/bin:$PATH" }
+run = [
+    "curl -fsSL https://go.dev/dl/go1.24.0.linux-amd64.tar.gz | tar -C /usr/local -xz",
+]
+```
+
+A `[toolchain.NAME]` table accepts the same installation keys as the global
+lists below (`install`, `cargo`, `npm`, `bun`, `uv`, `downloads`) scoped to
+that toolchain, plus:
+
+`includes` is a list of other toolchain names installed whenever this one is.
+Expansion is transitive, and included toolchains behave as if they were listed
+in `toolchains` themselves, including their `extra` commands. The include
+graph must not contain cycles.
+
+```toml
+[toolchain.fullstack]
+includes = ["rust", "web"]
+
+[toolchain.web]
+npm = ["typescript", "eslint"]
+```
+
+`install` is a list of Debian packages installed with `apt-get` before the
+toolchain itself.
+
+`env` is a table of environment variables set before the toolchain installs.
+
+`run` is a list of shell commands that install the toolchain. They run whenever
+the toolchain is installed, including when it is pulled in implicitly by
+another toolchain's package lists.
+
+`extra` is a list of shell commands that run only when the toolchain is
+explicitly listed in `toolchains` or selected with `--toolchain`.
+
+### Global toolchain library
+
+Toolchains shared across projects live in
+`$XDG_CONFIG_HOME/pithos/toolchains.toml`. The file contains only
+`[toolchain.NAME]` tables using the same schema. Project definitions take
+precedence over the library, which takes precedence over the built-ins.
 
 `cargo` is a list of Rust crates installed with `cargo install`. Specifying
 Cargo packages also installs Rust even when `rust` is not listed in

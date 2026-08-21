@@ -1,7 +1,6 @@
-use clap::ValueEnum;
 use eyre::{Result, WrapErr, bail, eyre};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -18,7 +17,9 @@ pub(crate) struct Config {
     #[serde(default)]
     pub(crate) install: Vec<String>,
     #[serde(default)]
-    pub(crate) toolchains: Vec<Toolchain>,
+    pub(crate) toolchains: Vec<String>,
+    #[serde(default, rename = "toolchain")]
+    pub(crate) toolchain_defs: BTreeMap<String, ToolchainDef>,
     #[serde(default)]
     pub(crate) cargo: Vec<String>,
     #[serde(default)]
@@ -30,6 +31,8 @@ pub(crate) struct Config {
     #[serde(default)]
     pub(crate) downloads: Vec<Download>,
     pub(crate) harness: Harness,
+    #[serde(skip, default)]
+    pub(crate) global_toolchains: BTreeMap<String, ToolchainDef>,
     #[serde(default)]
     pub(crate) environment: BTreeMap<String, String>,
     #[serde(default = "default_exclusions")]
@@ -42,12 +45,78 @@ pub(crate) struct Config {
 
 pub(crate) const DEFAULT_WHITELIST: &[&str] = &["opencode.ai", "mcp.exa.ai", "api.exa.ai"];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-#[clap(rename_all = "kebab-case")]
-pub(crate) enum Toolchain {
-    Rust,
-    Python,
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ToolchainDef {
+    #[serde(default)]
+    pub(crate) includes: Vec<String>,
+    #[serde(default)]
+    pub(crate) install: Vec<String>,
+    #[serde(default)]
+    pub(crate) env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub(crate) run: Vec<String>,
+    #[serde(default)]
+    pub(crate) extra: Vec<String>,
+    #[serde(default)]
+    pub(crate) cargo: Vec<String>,
+    #[serde(default)]
+    pub(crate) npm: Vec<String>,
+    #[serde(default)]
+    pub(crate) bun: Vec<String>,
+    #[serde(default)]
+    pub(crate) uv: Vec<UvTool>,
+    #[serde(default)]
+    pub(crate) downloads: Vec<Download>,
+}
+
+pub(crate) fn builtin_toolchains() -> BTreeMap<String, ToolchainDef> {
+    let mut defs = BTreeMap::new();
+    defs.insert("rust".into(), rust_preset());
+    defs.insert("python".into(), python_preset());
+    defs
+}
+
+fn rust_preset() -> ToolchainDef {
+    ToolchainDef {
+        env: BTreeMap::from([
+            ("RUSTUP_HOME".into(), "/usr/local/rustup".into()),
+            ("CARGO_HOME".into(), "/usr/local/cargo".into()),
+            ("PATH".into(), "/usr/local/cargo/bin:$PATH".into()),
+        ]),
+        install: vec![
+            "curl".into(),
+            "ca-certificates".into(),
+            "gcc".into(),
+            "libc6-dev".into(),
+        ],
+        run: vec!["curl -fsSL https://sh.rustup.rs | sh -s -- -y".into()],
+        extra: vec!["rustup component add rust-analyzer".into()],
+        ..Default::default()
+    }
+}
+
+fn python_preset() -> ToolchainDef {
+    ToolchainDef {
+        install: vec!["curl".into(), "ca-certificates".into()],
+        run: vec![
+            "curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh".into(),
+        ],
+        env: BTreeMap::from([
+            ("PATH".into(), "/usr/local/bin:$PATH".into()),
+            ("UV_TOOL_BIN_DIR".into(), "/usr/local/bin".into()),
+            ("UV_TOOL_DIR".into(), "/usr/local/uv/tools".into()),
+            (
+                "UV_PYTHON_INSTALL_DIR".into(),
+                "/usr/local/uv/python".into(),
+            ),
+        ]),
+        extra: vec![
+            "uv tool install ruff".into(),
+            "npm install --global pyright".into(),
+        ],
+        ..Default::default()
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -70,7 +139,7 @@ fn default_use_default_whitelist() -> bool {
     true
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct UvTool {
     pub(crate) name: String,
@@ -80,7 +149,7 @@ pub(crate) struct UvTool {
     pub(crate) run: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Download {
     pub(crate) url: String,
@@ -103,7 +172,7 @@ fn default_image_tag() -> String {
 }
 
 impl Config {
-    pub(crate) fn init(toolchain: Option<Toolchain>) -> Result<()> {
+    pub(crate) fn init(toolchain: Option<String>) -> Result<()> {
         let path = Path::new("pithos.toml");
         let mut file = fs::OpenOptions::new()
             .write(true)
@@ -117,21 +186,122 @@ impl Config {
         Ok(())
     }
 
-    pub(crate) fn load(explicit: Option<&Path>) -> Result<Self> {
+    pub(crate) fn load(explicit: Option<&Path>, toolchain: Option<String>) -> Result<Self> {
         let path = resolve_config(explicit)?;
-        let config: Config =
+        let mut config: Config =
             toml::from_str(&fs::read_to_string(&path).wrap_err("cannot read config")?)
                 .wrap_err("invalid TOML configuration")?;
+        config.global_toolchains = load_global_toolchains()?;
+        config.with_toolchain(toolchain);
         config.validate()?;
         Ok(config)
     }
 
-    pub(crate) fn with_toolchain(mut self, toolchain: Option<Toolchain>) -> Self {
-        if let Some(toolchain) = toolchain {
-            self.toolchains = vec![toolchain];
-            self.image_tag = format!("{}-{}", self.image_tag, toolchain_name(toolchain));
+    pub(crate) fn with_toolchain(&mut self, toolchain: Option<String>) {
+        if let Some(name) = toolchain {
+            self.toolchains = vec![name.clone()];
+            self.image_tag = format!("{}-{}", self.image_tag, name);
         }
-        self
+    }
+
+    pub(crate) fn merged_toolchains(&self) -> BTreeMap<String, ToolchainDef> {
+        let mut defs = builtin_toolchains();
+        defs.extend(
+            self.global_toolchains
+                .iter()
+                .map(|(name, def)| (name.clone(), def.clone())),
+        );
+        defs.extend(
+            self.toolchain_defs
+                .iter()
+                .map(|(name, def)| (name.clone(), def.clone())),
+        );
+        defs
+    }
+
+    pub(crate) fn expanded_selection(
+        &self,
+        defs: &BTreeMap<String, ToolchainDef>,
+    ) -> Result<Vec<String>> {
+        fn expand_name(
+            name: &str,
+            defs: &BTreeMap<String, ToolchainDef>,
+            out: &mut Vec<String>,
+            seen: &mut BTreeSet<String>,
+            path: &mut Vec<String>,
+        ) -> Result<()> {
+            if let Some(start) = path.iter().position(|entry| entry == name) {
+                let mut chain = path[start..].to_vec();
+                chain.push(name.to_owned());
+                bail!("cyclic toolchain includes: {}", chain.join(" -> "));
+            }
+            if !defs.contains_key(name) {
+                let included_by = path
+                    .last()
+                    .map(|parent| format!(" (included by \"{parent}\")"))
+                    .unwrap_or_default();
+                bail!(
+                    "unknown toolchain \"{name}\"{included_by}; available: {}",
+                    defs.keys().cloned().collect::<Vec<_>>().join(", ")
+                )
+            }
+            if seen.insert(name.to_owned()) {
+                out.push(name.to_owned());
+                path.push(name.to_owned());
+                for included in &defs[name].includes {
+                    expand_name(included, defs, out, seen, path)?;
+                }
+                path.pop();
+            }
+            Ok(())
+        }
+
+        let mut out = Vec::new();
+        let mut seen = BTreeSet::new();
+        for name in &self.toolchains {
+            let mut path = Vec::new();
+            expand_name(name, defs, &mut out, &mut seen, &mut path)?;
+        }
+        Ok(out)
+    }
+
+    fn implied_names(
+        selected: &[String],
+        defs: &BTreeMap<String, ToolchainDef>,
+        global_cargo: &[String],
+        global_uv: &[UvTool],
+    ) -> Vec<String> {
+        let mut wanted = selected.to_vec();
+        let mut index = 0;
+        while index < wanted.len() {
+            let name = wanted[index].clone();
+            if let Some(def) = defs.get(&name) {
+                for (implied, needed) in [
+                    ("rust", !def.cargo.is_empty()),
+                    ("python", !def.uv.is_empty()),
+                ] {
+                    if needed && !wanted.iter().any(|existing| existing == implied) {
+                        wanted.push(implied.to_owned());
+                    }
+                }
+            }
+            index += 1;
+        }
+        if !global_cargo.is_empty() && !wanted.iter().any(|existing| existing == "rust") {
+            wanted.push("rust".into());
+        }
+        if !global_uv.is_empty() && !wanted.iter().any(|existing| existing == "python") {
+            wanted.push("python".into());
+        }
+        wanted
+    }
+
+    pub(crate) fn wanted_names(
+        &self,
+        defs: &BTreeMap<String, ToolchainDef>,
+    ) -> Result<Vec<String>> {
+        let selected = self.expanded_selection(defs)?;
+        Ok(Self::implied_names(&selected, defs, &self.cargo, &self.uv))
     }
 
     fn validate(&self) -> Result<()> {
@@ -140,6 +310,22 @@ impl Config {
         }
         if self.workspace.is_empty() || !self.workspace.starts_with('/') {
             bail!("workspace must be an absolute container path")
+        }
+        let defs = self.merged_toolchains();
+        for name in defs.keys() {
+            if !valid_toolchain_name(name) {
+                bail!("invalid toolchain name \"{name}\": use letters, digits, '-', '_', '.'")
+            }
+        }
+        self.expanded_selection(&defs)?;
+        for name in self.wanted_names(&defs)? {
+            let def = &defs[&name];
+            if def.uv.iter().any(|tool| tool.name.is_empty()) {
+                bail!("uv tool name cannot be empty (toolchain {name})")
+            }
+            if def.downloads.iter().any(|download| download.url.is_empty()) {
+                bail!("download url cannot be empty (toolchain {name})")
+            }
         }
         if self.uv.iter().any(|tool| tool.name.is_empty()) {
             bail!("uv tool name cannot be empty")
@@ -170,20 +356,40 @@ impl Config {
     }
 }
 
-fn starter_config(toolchain: Option<Toolchain>) -> String {
+fn starter_config(toolchain: Option<String>) -> String {
     let toolchains = toolchain
-        .map(|toolchain| format!("toolchains = [\"{}\"]\n", toolchain_name(toolchain)))
+        .map(|name| format!("toolchains = [\"{name}\"]\n"))
         .unwrap_or_default();
     format!(
-        "base_image = \"node:22-bookworm-slim\"\nimage_tag = \"localhost/pithos-opencode:latest\"\nworkspace = \"/workspace\"\n\n{toolchains}\n[harness]\nname = \"opencode\"\ncommand = [\"opencode\", \"/workspace\"]\n"
+        "base_image = \"node:22-bookworm-slim\"\nimage_tag = \"localhost/pithos-opencode:latest\"\nworkspace = \"/workspace\"\n\n{toolchains}\n# Define custom toolchains or override built-ins (\"rust\", \"python\"):\n# [toolchain.example]\n# install = [\"curl\"]\n# env = {{ PATH = \"/opt/example/bin:$PATH\" }}\n# run = [\"curl -fsSL https://example.com/install.sh | sh\"]\n# extra = [\"example --version\"]\n\n[harness]\nname = \"opencode\"\ncommand = [\"opencode\", \"/workspace\"]\n"
     )
 }
 
-fn toolchain_name(toolchain: Toolchain) -> &'static str {
-    match toolchain {
-        Toolchain::Rust => "rust",
-        Toolchain::Python => "python",
+fn valid_toolchain_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ToolchainLibrary {
+    #[serde(default, rename = "toolchain")]
+    defs: BTreeMap<String, ToolchainDef>,
+}
+
+fn load_global_toolchains() -> Result<BTreeMap<String, ToolchainDef>> {
+    let Some(dir) = dirs::config_dir() else {
+        return Ok(BTreeMap::new());
+    };
+    let path = dir.join("pithos").join("toolchains.toml");
+    if !path.exists() {
+        return Ok(BTreeMap::new());
     }
+    let library: ToolchainLibrary =
+        toml::from_str(&fs::read_to_string(&path).wrap_err("cannot read global toolchains.toml")?)
+            .wrap_err("invalid global toolchains.toml")?;
+    Ok(library.defs)
 }
 
 fn resolve_config(explicit: Option<&Path>) -> Result<PathBuf> {
@@ -231,7 +437,255 @@ mod tests {
             name = "opencode"
             "#,
         );
-        assert_eq!(config.toolchains, vec![Toolchain::Rust, Toolchain::Python]);
+        assert_eq!(config.toolchains, ["rust", "python"]);
+    }
+
+    #[test]
+    fn custom_toolchain_definitions_parse() {
+        let config = Config::parse(
+            r#"
+            toolchains = ["golang"]
+
+            [harness]
+            name = "opencode"
+
+            [toolchain.golang]
+            install = ["ca-certificates"]
+            env = { PATH = "/usr/local/go/bin:$PATH" }
+            run = ["curl -fsSL https://go.dev/dl/go.tar.gz | tar -C /usr/local -xz"]
+            extra = ["go version"]
+            "#,
+        );
+        let def = config.toolchain_defs.get("golang").unwrap();
+        assert_eq!(def.install, ["ca-certificates"]);
+        assert_eq!(def.env["PATH"], "/usr/local/go/bin:$PATH");
+        assert_eq!(def.run.len(), 1);
+        assert_eq!(def.extra, ["go version"]);
+    }
+
+    #[test]
+    fn merged_toolchains_include_builtins_and_project_definitions() {
+        let config: Config = toml::from_str(
+            r#"
+            [harness]
+            name = "opencode"
+
+            [toolchain.golang]
+            run = ["install-go"]
+            "#,
+        )
+        .unwrap();
+        let defs = config.merged_toolchains();
+        assert!(defs.contains_key("rust"));
+        assert!(defs.contains_key("python"));
+        assert_eq!(defs["golang"].run, ["install-go"]);
+    }
+
+    #[test]
+    fn project_definitions_override_builtins_silently() {
+        let config: Config = toml::from_str(
+            r#"
+            [harness]
+            name = "opencode"
+
+            [toolchain.rust]
+            run = ["custom-rust-installer"]
+            "#,
+        )
+        .unwrap();
+        let defs = config.merged_toolchains();
+        assert_eq!(defs["rust"].run, ["custom-rust-installer"]);
+        assert!(defs["rust"].extra.is_empty());
+        assert!(!defs.contains_key("unused") || defs["rust"].env.is_empty());
+    }
+
+    #[test]
+    fn unknown_selected_toolchain_fails_validation_listing_available() {
+        let error = Config::try_parse(
+            r#"
+            toolchains = ["nosuch"]
+
+            [harness]
+            name = "opencode"
+            "#,
+        )
+        .unwrap()
+        .validate()
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("unknown toolchain \"nosuch\""),
+            "{message}"
+        );
+        assert!(
+            message.contains("python") && message.contains("rust"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn invalid_toolchain_names_fail_validation() {
+        let error = Config::try_parse(
+            r#"
+            [harness]
+            name = "opencode"
+
+            [toolchain."bad name"]
+            run = ["true"]
+            "#,
+        )
+        .unwrap()
+        .validate()
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("invalid toolchain name"),
+            "{}",
+            error
+        );
+    }
+
+    #[test]
+    fn scoped_cargo_implies_rust_wanted() {
+        let config: Config = toml::from_str(
+            r#"
+            toolchains = ["mine"]
+
+            [harness]
+            name = "opencode"
+
+            [toolchain.mine]
+            cargo = ["just"]
+            "#,
+        )
+        .unwrap();
+        let defs = config.merged_toolchains();
+        assert_eq!(config.wanted_names(&defs).unwrap(), ["mine", "rust"]);
+    }
+
+    #[test]
+    fn includes_expand_transitively_in_order() {
+        let config: Config = toml::from_str(
+            r#"
+            toolchains = ["fullstack"]
+
+            [harness]
+            name = "opencode"
+
+            [toolchain.fullstack]
+            includes = ["rust", "web"]
+
+            [toolchain.web]
+            includes = ["python"]
+            "#,
+        )
+        .unwrap();
+        let defs = config.merged_toolchains();
+        assert_eq!(
+            config.expanded_selection(&defs).unwrap(),
+            ["fullstack", "rust", "web", "python"]
+        );
+        assert_eq!(
+            config.wanted_names(&defs).unwrap(),
+            ["fullstack", "rust", "web", "python"]
+        );
+    }
+
+    #[test]
+    fn mutual_includes_are_rejected_with_chain() {
+        let error = Config::try_parse(
+            r#"
+            toolchains = ["a"]
+
+            [harness]
+            name = "opencode"
+
+            [toolchain.a]
+            includes = ["b"]
+
+            [toolchain.b]
+            includes = ["a"]
+            "#,
+        )
+        .unwrap()
+        .validate()
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cyclic toolchain includes: a -> b -> a"),
+            "{}",
+            error
+        );
+    }
+
+    #[test]
+    fn self_include_is_rejected_as_cycle() {
+        let error = Config::try_parse(
+            r#"
+            toolchains = ["loop"]
+
+            [harness]
+            name = "opencode"
+
+            [toolchain.loop]
+            includes = ["loop"]
+            "#,
+        )
+        .unwrap()
+        .validate()
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("cyclic toolchain includes"),
+            "{}",
+            error
+        );
+    }
+
+    #[test]
+    fn unknown_include_target_errors_with_context() {
+        let error = Config::try_parse(
+            r#"
+            toolchains = ["meta"]
+
+            [harness]
+            name = "opencode"
+
+            [toolchain.meta]
+            includes = ["ghost"]
+            "#,
+        )
+        .unwrap()
+        .validate()
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("unknown toolchain \"ghost\" (included by \"meta\")"),
+            "{message}"
+        );
+        assert!(message.contains("available:"), "{message}");
+    }
+
+    #[test]
+    fn scoped_uv_name_is_validated() {
+        let error = Config::try_parse(
+            r#"
+            toolchains = ["py"]
+
+            [harness]
+            name = "opencode"
+
+            [toolchain.py]
+            uv = [{ name = "" }]
+            "#,
+        )
+        .unwrap()
+        .validate()
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("uv tool name cannot be empty"),
+            "{}",
+            error
+        );
     }
 
     #[test]
@@ -246,18 +700,19 @@ mod tests {
     }
 
     #[test]
-    fn toolchains_reject_unknown_names() {
-        assert!(
-            Config::try_parse(
-                r#"
+    fn toolchains_accept_arbitrary_defined_names() {
+        let config = Config::parse(
+            r#"
             toolchains = ["rust", "golang"]
 
             [harness]
             name = "opencode"
+
+            [toolchain.golang]
+            run = ["install-go"]
             "#,
-            )
-            .is_err()
         );
+        assert_eq!(config.toolchains, ["rust", "golang"]);
     }
 
     #[test]
@@ -272,13 +727,19 @@ mod tests {
 
     #[test]
     fn starter_config_includes_selected_toolchain() {
-        let config: Config = toml::from_str(&starter_config(Some(Toolchain::Python))).unwrap();
-        assert_eq!(config.toolchains, vec![Toolchain::Python]);
+        let config: Config = toml::from_str(&starter_config(Some("python".into()))).unwrap();
+        assert_eq!(config.toolchains, ["python"]);
+    }
+
+    #[test]
+    fn starter_config_parses_with_commented_example() {
+        let config: Config = toml::from_str(&starter_config(None)).unwrap();
+        assert!(config.toolchains.is_empty());
     }
 
     #[test]
     fn with_toolchain_overrides_config_toolchains_and_retags() {
-        let config: Config = toml::from_str(
+        let mut config: Config = toml::from_str(
             r#"
             toolchains = ["python"]
 
@@ -287,14 +748,14 @@ mod tests {
             "#,
         )
         .unwrap();
-        let config = config.with_toolchain(Some(Toolchain::Rust));
-        assert_eq!(config.toolchains, vec![Toolchain::Rust]);
-        assert_eq!(config.image_tag, "localhost/pithos-opencode:latest-rust");
+        config.with_toolchain(Some("golang".into()));
+        assert_eq!(config.toolchains, ["golang"]);
+        assert_eq!(config.image_tag, "localhost/pithos-opencode:latest-golang");
     }
 
     #[test]
     fn with_toolchain_none_keeps_config_toolchains() {
-        let config: Config = toml::from_str(
+        let mut config: Config = toml::from_str(
             r#"
             toolchains = ["python"]
 
@@ -303,8 +764,8 @@ mod tests {
             "#,
         )
         .unwrap();
-        let config = config.with_toolchain(None);
-        assert_eq!(config.toolchains, vec![Toolchain::Python]);
+        config.with_toolchain(None);
+        assert_eq!(config.toolchains, ["python"]);
         assert_eq!(config.image_tag, "localhost/pithos-opencode:latest");
     }
 

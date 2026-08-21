@@ -26,7 +26,7 @@ struct Cli {
     #[arg(short, long)]
     config: Option<PathBuf>,
     #[arg(short = 't', long, global = true)]
-    toolchain: Option<config::Toolchain>,
+    toolchain: Option<String>,
     #[arg(long)]
     yes: bool,
     #[arg(long)]
@@ -72,12 +72,10 @@ fn execute() -> Result<()> {
     }
     match cli.command {
         Some(Commands::Init) => Config::init(cli.toolchain),
-        Some(Commands::Build) => Config::load(cli.config.as_deref())?
-            .with_toolchain(cli.toolchain)
-            .build_image(),
+        Some(Commands::Build) => Config::load(cli.config.as_deref(), cli.toolchain)?.build_image(),
         Some(Commands::Run) | None => {
             let repository = env::current_dir().wrap_err("cannot determine current directory")?;
-            let config = Config::load(cli.config.as_deref())?.with_toolchain(cli.toolchain);
+            let config = Config::load(cli.config.as_deref(), cli.toolchain)?;
             session::run_session(&config, &repository, cli.yes, cli.no)
         }
         Some(Commands::Ps) => attach::ps(),
