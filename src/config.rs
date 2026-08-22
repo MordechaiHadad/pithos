@@ -117,7 +117,7 @@ fn default_exclusions() -> Vec<String> {
 }
 
 fn default_install() -> Vec<String> {
-    vec!["git".into(), "gcc".into()]
+    vec!["git".into(), "gcc".into(), "libc6-dev".into()]
 }
 
 fn default_base_image() -> String {

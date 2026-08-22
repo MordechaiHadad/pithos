@@ -145,7 +145,7 @@ command = ["opencode", "/workspace"]
 container. It defaults to `/workspace`.
 
 `install` is a list of Debian packages installed with `apt-get`. It defaults to
-`["git", "gcc"]`.
+`["git", "gcc", "libc6-dev"]`.
 
 `toolchains` is a list of toolchain names to install. Every toolchain is
 user-defined: a name must resolve to a `[toolchain.NAME]` table in the project
