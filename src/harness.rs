@@ -5,9 +5,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::agent::{AGENT_HOME, AGENT_USER};
 use crate::platform;
 
 pub type Allowlist = BTreeMap<String, Value>;
+
+pub(crate) fn tmpfs_spec(target: &str) -> String {
+    format!("{target}:rw,mode=1777")
+}
 
 struct HarnessPaths {
     data: PathBuf,
@@ -49,20 +54,28 @@ impl Harness {
                 mount_path(
                     command,
                     &paths.data,
-                    "/home/node/.local/share/opencode",
+                    &format!("{AGENT_HOME}/.local/share/opencode"),
                     false,
                 )?;
-                command.args(["--tmpfs", "/home/node/.local/state/opencode"]);
-                command.args(["--tmpfs", "/home/node/.cache"]);
-                command.args(["--tmpfs", "/home/node/.serena"]);
+                command.args([
+                    "--tmpfs",
+                    &tmpfs_spec(&format!("{AGENT_HOME}/.local/state/opencode")),
+                ]);
+                command.args(["--tmpfs", &tmpfs_spec(&format!("{AGENT_HOME}/.cache"))]);
+                command.args(["--tmpfs", &tmpfs_spec(&format!("{AGENT_HOME}/.serena"))]);
                 if self.config_required() {
-                    mount_if_exists(command, &paths.config, "/home/node/.config/opencode", true)?;
+                    mount_if_exists(
+                        command,
+                        &paths.config,
+                        &format!("{AGENT_HOME}/.config/opencode"),
+                        true,
+                    )?;
                 }
                 if *credentials {
                     mount_if_exists(
                         command,
                         &paths.credentials,
-                        "/home/node/.local/share/opencode/auth.json",
+                        &format!("{AGENT_HOME}/.local/share/opencode/auth.json"),
                         true,
                     )?;
                 }
@@ -152,6 +165,15 @@ fn mount_path(
 mod tests {
     use super::*;
     use crate::config::Config;
+
+    #[test]
+    fn tmpfs_mounts_are_world_writable_with_sticky_bit() {
+        assert_eq!(tmpfs_spec("/tmp"), "/tmp:rw,mode=1777");
+        assert_eq!(
+            tmpfs_spec(&format!("{AGENT_HOME}/.cache")),
+            "/home/agent/.cache:rw,mode=1777"
+        );
+    }
 
     #[test]
     fn opencode_allowlist_becomes_permission_env() {

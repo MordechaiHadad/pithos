@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::process::Command;
 
+use crate::agent::{AGENT_HOME, AGENT_USER};
 use crate::config::{Config, Download, ToolchainDef, UvTool};
 use crate::sandbox::TempDir;
 
@@ -65,7 +66,7 @@ impl Config {
 
     fn containerfile(&self) -> Result<String> {
         let mut output = format!("FROM {}\nWORKDIR {}\n", self.base_image, self.workspace);
-        output.push_str("ENV HOME=/home/node\n");
+        output.push_str(&agent_preamble());
         output.push_str(&self.harness.install());
         if let Some(line) = install_line(
             "apt-get update && apt-get install -y --no-install-recommends",
@@ -126,8 +127,8 @@ impl Config {
         for download in &self.downloads {
             output.push_str(&format!("RUN {}\n", download.command()));
         }
+        output.push_str(&agent_epilogue());
         output.push_str("RUN chmod -R a+rwX /tmp\n");
-        output.push_str("RUN chown -R node:node /home/node\n");
         output.push_str("CMD ");
         output.push_str(&json_command(self.harness.command()));
         output.push('\n');
@@ -186,6 +187,28 @@ impl ToolchainDef {
         }
         block
     }
+}
+
+fn agent_preamble() -> String {
+    let uid = crate::platform::current_uid();
+    let gid = crate::platform::current_gid();
+    let mut preamble = format!(
+        "RUN mkdir -p {} && (useradd -o -m -d {} -u {uid} -g {gid} -s /bin/sh {} || true)\n",
+        shell_quote(AGENT_HOME),
+        shell_quote(AGENT_HOME),
+        shell_quote(AGENT_USER),
+    );
+    preamble.push_str(&format!("ENV HOME={AGENT_HOME}\n"));
+    preamble
+}
+
+fn agent_epilogue() -> String {
+    let uid = crate::platform::current_uid();
+    let gid = crate::platform::current_gid();
+    format!(
+        "RUN chown -R {uid}:{gid} {}\n",
+        shell_quote(AGENT_HOME)
+    )
 }
 
 fn uv_install_lines(tool: &UvTool) -> String {
@@ -354,11 +377,21 @@ mod tests {
     #[test]
     fn build_steps_write_to_the_runtime_home() {
         let file = Config::with_cargo().rendered();
-        assert!(file.contains("ENV HOME=/home/node\n"));
+        let uid = crate::platform::current_uid();
+        let gid = crate::platform::current_gid();
+        assert!(
+            file.contains(&format!(
+                "RUN mkdir -p '/home/agent' && (useradd -o -m -d '/home/agent' -u {uid} -g {gid} -s /bin/sh 'agent' || true)\n"
+            )),
+            "preamble missing: {file}"
+        );
+        assert!(file.contains("ENV HOME=/home/agent\n"));
         assert!(file.contains("RUN cargo install --root /usr/local 'just'\n"));
-        assert!(file.contains("RUN chown -R node:node /home/node\n"));
-        let chmod = file.find("RUN chown -R node:node /home/node\n").unwrap();
-        assert!(chmod < file.find("CMD ").unwrap());
+        assert!(file.contains(&format!("RUN chown -R {uid}:{gid} '/home/agent'\n")));
+        let chown = file
+            .find(&format!("RUN chown -R {uid}:{gid} '/home/agent'\n"))
+            .unwrap();
+        assert!(chown < file.find("CMD ").unwrap());
     }
 
     #[test]

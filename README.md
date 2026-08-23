@@ -136,7 +136,12 @@ command = ["opencode", "/workspace"]
 ### Container settings
 
 `base_image` is the base container image. It defaults to
-`node:22-bookworm-slim`.
+`node:22-bookworm-slim`. Any image works as long as it provides `node`, `npm`,
+and `useradd`; pithos provisions its own unprivileged agent user (uid/gid taken
+from the invoking host user, home `/home/agent`) instead of relying on the base
+image's default user. After building, `host/smoke-test-agent.sh <image>`
+verifies the session environment: agent-home ownership, writable state/cache
+mounts, and that every installed tool resolves for the runtime user.
 
 `image_tag` is the local Podman image tag. It defaults to
 `localhost/pithos-opencode:latest`.
