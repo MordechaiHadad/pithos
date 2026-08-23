@@ -150,7 +150,9 @@ mounts, and that every installed tool resolves for the runtime user.
 container. It defaults to `/workspace`.
 
 `install` is a list of Debian packages installed with `apt-get`. It defaults to
-`["git", "gcc", "libc6-dev"]`.
+`["git", "gcc", "libc6-dev", "ncurses-term"]`. The terminfo database shipped by
+`ncurses-term` lets tools resolve the host terminal's `TERM` value inside the
+container.
 
 `toolchains` is a list of toolchain names to install. Every toolchain is
 user-defined: a name must resolve to a `[toolchain.NAME]` table in the project
@@ -305,8 +307,14 @@ both. OpenCode credentials can be enabled with `credentials = true` inside the
 
 ```toml
 [environment]
-TERM = "xterm-256color"
+EDITOR = "nvim"
 ```
+
+Terminal-related variables (`TERM`, `COLORTERM`, `TERM_PROGRAM`,
+`TERM_PROGRAM_VERSION`, and `NO_COLOR`) are forwarded automatically from the
+host shell to `run`, `shell`, and `exec`, so harnesses like OpenCode detect the
+same color support inside the sandbox as outside it and truecolor themes render
+identically. Entries in `[environment]` take precedence over forwarded values.
 
 ### Networking
 

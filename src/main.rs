@@ -10,6 +10,7 @@ use crate::config::Config;
 mod agent;
 mod attach;
 mod config;
+mod environment;
 mod harness;
 mod image;
 mod networking;

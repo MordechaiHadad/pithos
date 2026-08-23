@@ -2,6 +2,7 @@ use eyre::{Result, WrapErr, bail};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::environment;
 use crate::registry::{self, SessionRecord};
 
 pub(crate) fn ps() -> Result<()> {
@@ -26,6 +27,9 @@ pub(crate) fn shell(session_id: Option<String>) -> Result<()> {
     let session = resolve_session(session_id.as_deref())?;
     let mut command = Command::new("podman");
     command.args(["exec", "--interactive", "--tty"]);
+    for (key, value) in environment::terminal_env() {
+        command.args(["--env", &format!("{key}={value}")]);
+    }
     push_target(&mut command, &session);
     command.arg("bash");
     run_foreground(command, "shell")
@@ -38,6 +42,9 @@ pub(crate) fn exec(session_id: Option<String>, args: &[String]) -> Result<()> {
     let session = resolve_session(session_id.as_deref())?;
     let mut command = Command::new("podman");
     command.arg("exec");
+    for (key, value) in environment::terminal_env() {
+        command.args(["--env", &format!("{key}={value}")]);
+    }
     push_target(&mut command, &session);
     command.args(args);
     run_foreground(command, "exec")

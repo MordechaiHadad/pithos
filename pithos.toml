@@ -39,9 +39,6 @@ command = ["opencode", "/workspace"]
 [credentials]
 opencode = true
 
-[environment]
-TERM = "xterm-256color"
-
 # [networking]
 # Restrict egress from the agent container. Loaded into the container's
 # network namespace from the host via an OCI hook (see README / plan).

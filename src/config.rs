@@ -117,7 +117,12 @@ fn default_exclusions() -> Vec<String> {
 }
 
 fn default_install() -> Vec<String> {
-    vec!["git".into(), "gcc".into(), "libc6-dev".into()]
+    vec![
+        "git".into(),
+        "gcc".into(),
+        "libc6-dev".into(),
+        "ncurses-term".into(),
+    ]
 }
 
 fn default_base_image() -> String {
@@ -588,6 +593,17 @@ mod tests {
             "#,
         );
         assert!(config.toolchains.is_empty());
+    }
+
+    #[test]
+    fn default_install_ships_terminfo_database() {
+        let config = Config::parse(
+            r#"
+            [harness]
+            name = "opencode"
+            "#,
+        );
+        assert_eq!(config.install, ["git", "gcc", "libc6-dev", "ncurses-term"]);
     }
 
     #[test]
