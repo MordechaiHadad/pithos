@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::agent::{AGENT_HOME, AGENT_USER};
+use crate::agent::AGENT_HOME;
 use crate::platform;
 
 pub type Allowlist = BTreeMap<String, Value>;

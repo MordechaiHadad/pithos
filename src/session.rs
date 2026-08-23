@@ -63,7 +63,12 @@ pub(crate) fn run_session(
         &format!("{}:{}:rw,Z", sandbox.0.display(), config.workspace),
     ]);
     command.args(["--workdir", &config.workspace]);
-    command.args(["--tmpfs", &crate::harness::tmpfs_spec("/tmp"), "--user", &current_user]);
+    command.args([
+        "--tmpfs",
+        &crate::harness::tmpfs_spec("/tmp"),
+        "--user",
+        &current_user,
+    ]);
     for (key, value) in &config.environment {
         command.args(["--env", &format!("{key}={value}")]);
     }

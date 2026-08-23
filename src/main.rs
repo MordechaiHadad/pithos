@@ -7,8 +7,8 @@ use tracing_subscriber::{EnvFilter, prelude::*};
 
 use crate::config::Config;
 
-mod attach;
 mod agent;
+mod attach;
 mod config;
 mod harness;
 mod image;

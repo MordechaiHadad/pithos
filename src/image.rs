@@ -205,10 +205,7 @@ fn agent_preamble() -> String {
 fn agent_epilogue() -> String {
     let uid = crate::platform::current_uid();
     let gid = crate::platform::current_gid();
-    format!(
-        "RUN chown -R {uid}:{gid} {}\n",
-        shell_quote(AGENT_HOME)
-    )
+    format!("RUN chown -R {uid}:{gid} {}\n", shell_quote(AGENT_HOME))
 }
 
 fn uv_install_lines(tool: &UvTool) -> String {
@@ -366,7 +363,9 @@ mod tests {
         assert!(file.contains("RUN cargo install --root /usr/local 'just'\n"));
         let mise = file.find("(command -v mise").unwrap();
         let rust = file.find("mise use -g --yes 'rust'\n").unwrap();
-        let install = file.find("RUN cargo install --root /usr/local 'just'\n").unwrap();
+        let install = file
+            .find("RUN cargo install --root /usr/local 'just'\n")
+            .unwrap();
         assert!(mise < rust && rust < install);
         assert!(file.contains(
             "ENV MISE_DATA_DIR=/usr/local/share/mise PATH=/usr/local/share/mise/shims:$PATH\n"
@@ -413,7 +412,9 @@ mod tests {
         assert!(file.contains("ENV UV_TOOL_BIN_DIR=/usr/local/bin\n"));
         let mise = file.find("mise use -g --yes 'deno'").unwrap();
         let uv_env = file.find("ENV UV_TOOL_BIN_DIR=/usr/local/bin\n").unwrap();
-        let cargo = file.find("RUN cargo install --root /usr/local 'just'\n").unwrap();
+        let cargo = file
+            .find("RUN cargo install --root /usr/local 'just'\n")
+            .unwrap();
         let bun = file.find("RUN bun install --global 'htmx'\n").unwrap();
         let uv_install = file.find("RUN uv tool install 'serena-agent'").unwrap();
         assert!(mise < cargo);
@@ -439,7 +440,9 @@ mod tests {
         .unwrap();
         let file = config.rendered();
         let rust = file.find("mise use -g --yes 'rust'\n").unwrap();
-        let install = file.find("RUN cargo install --root /usr/local 'just'\n").unwrap();
+        let install = file
+            .find("RUN cargo install --root /usr/local 'just'\n")
+            .unwrap();
         assert!(rust < install);
     }
 
