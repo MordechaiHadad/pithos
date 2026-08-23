@@ -16,6 +16,7 @@ pub(crate) fn tmpfs_spec(target: &str) -> String {
 
 struct HarnessPaths {
     data: PathBuf,
+    state: PathBuf,
     config: PathBuf,
     credentials: PathBuf,
 }
@@ -57,10 +58,13 @@ impl Harness {
                     &format!("{AGENT_HOME}/.local/share/opencode"),
                     false,
                 )?;
-                command.args([
-                    "--tmpfs",
-                    &tmpfs_spec(&format!("{AGENT_HOME}/.local/state/opencode")),
-                ]);
+                fs::create_dir_all(&paths.state)?;
+                mount_path(
+                    command,
+                    &paths.state,
+                    &format!("{AGENT_HOME}/.local/state/opencode"),
+                    false,
+                )?;
                 command.args(["--tmpfs", &tmpfs_spec(&format!("{AGENT_HOME}/.cache"))]);
                 command.args(["--tmpfs", &tmpfs_spec(&format!("{AGENT_HOME}/.serena"))]);
                 if self.config_required() {
@@ -88,6 +92,7 @@ impl Harness {
         match self {
             Self::Opencode { .. } => Ok(HarnessPaths {
                 data: data_path("opencode")?,
+                state: state_path("opencode")?,
                 config: home_path(".config/opencode")?,
                 credentials: home_path(".local/share/opencode/auth.json")?,
             }),
@@ -129,6 +134,12 @@ fn data_path(application: &str) -> eyre::Result<PathBuf> {
     let data_dir =
         dirs::data_dir().ok_or_else(|| eyre::eyre!("cannot determine harness data directory"))?;
     Ok(data_dir.join(application))
+}
+
+fn state_path(application: &str) -> eyre::Result<PathBuf> {
+    let state_dir =
+        dirs::state_dir().ok_or_else(|| eyre::eyre!("cannot determine harness state directory"))?;
+    Ok(state_dir.join(application))
 }
 
 fn home_path(relative: &str) -> eyre::Result<PathBuf> {
@@ -260,5 +271,33 @@ mod tests {
         .unwrap();
         assert!(config.harness.config_required());
         assert!(config.harness.credentials_enabled());
+    }
+
+    #[test]
+    fn state_dir_is_bind_mounted_not_tmpfs() {
+        let config: Config = toml::from_str(
+            r#"
+            [harness]
+            name = "opencode"
+            "#,
+        )
+        .unwrap();
+        let mut command = Command::new("true");
+        config.harness.mount(&mut command).unwrap();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let state_target = format!("{AGENT_HOME}/.local/state/opencode");
+        let tmpfs_spec = tmpfs_spec(&state_target);
+        assert!(
+            args.iter()
+                .any(|arg| arg.ends_with(&format!(":{state_target}:rw"))),
+            "expected a read-write bind mount for {state_target}, got {args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == &tmpfs_spec),
+            "state dir must not be a tmpfs, got {args:?}"
+        );
     }
 }

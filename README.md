@@ -295,8 +295,9 @@ edit = "allow"
 `{dir}` placeholder, which is replaced with the temporary workspace path.
 
 Harness-specific persistent data is mounted into the container according to the
-selected harness. For OpenCode, its session database directory is mounted
-read-write so sessions created on the host or in the container are available to
+selected harness. For OpenCode, its session database directory and its state
+directory (theme, favorite models, recent models, prompt history) are mounted
+read-write so changes made on the host or in the container are available to
 both. OpenCode credentials can be enabled with `credentials = true` inside the
 `[harness]` table; the authentication file remains read-only.
 
