@@ -65,6 +65,7 @@ impl Config {
 
     fn containerfile(&self) -> Result<String> {
         let mut output = format!("FROM {}\nWORKDIR {}\n", self.base_image, self.workspace);
+        output.push_str("ENV HOME=/home/node\n");
         output.push_str(&self.harness.install());
         if let Some(line) = install_line(
             "apt-get update && apt-get install -y --no-install-recommends",
@@ -110,7 +111,7 @@ impl Config {
         if let Some(line) = mise_install_lines(&mise_tools) {
             output.push_str(&line);
         }
-        if let Some(line) = install_line("cargo install", "", &self.cargo) {
+        if let Some(line) = install_line("cargo install --root /usr/local", "", &self.cargo) {
             output.push_str(&line);
         }
         if let Some(line) = install_line("npm install --global", "", &self.npm) {
@@ -126,6 +127,7 @@ impl Config {
             output.push_str(&format!("RUN {}\n", download.command()));
         }
         output.push_str("RUN chmod -R a+rwX /tmp\n");
+        output.push_str("RUN chown -R node:node /home/node\n");
         output.push_str("CMD ");
         output.push_str(&json_command(self.harness.command()));
         output.push('\n');
@@ -163,7 +165,7 @@ impl ToolchainDef {
                 block.push_str(&format!("RUN {command}\n"));
             }
         }
-        if let Some(line) = install_line("cargo install", "", &self.cargo) {
+        if let Some(line) = install_line("cargo install --root /usr/local", "", &self.cargo) {
             block.push_str(&line);
         }
         if let Some(line) = install_line("npm install --global", "", &self.npm) {
@@ -338,15 +340,25 @@ mod tests {
     #[test]
     fn cargo_block_bootstraps_rust_via_mise() {
         let file = Config::with_cargo().rendered();
-        assert!(file.contains("RUN cargo install 'just'\n"));
+        assert!(file.contains("RUN cargo install --root /usr/local 'just'\n"));
         let mise = file.find("(command -v mise").unwrap();
         let rust = file.find("mise use -g --yes 'rust'\n").unwrap();
-        let install = file.find("RUN cargo install 'just'\n").unwrap();
+        let install = file.find("RUN cargo install --root /usr/local 'just'\n").unwrap();
         assert!(mise < rust && rust < install);
         assert!(file.contains(
             "ENV MISE_DATA_DIR=/usr/local/share/mise PATH=/usr/local/share/mise/shims:$PATH\n"
         ));
         assert!(file.contains("apt-get install -y --no-install-recommends 'git' 'gcc'"));
+    }
+
+    #[test]
+    fn build_steps_write_to_the_runtime_home() {
+        let file = Config::with_cargo().rendered();
+        assert!(file.contains("ENV HOME=/home/node\n"));
+        assert!(file.contains("RUN cargo install --root /usr/local 'just'\n"));
+        assert!(file.contains("RUN chown -R node:node /home/node\n"));
+        let chmod = file.find("RUN chown -R node:node /home/node\n").unwrap();
+        assert!(chmod < file.find("CMD ").unwrap());
     }
 
     #[test]
@@ -368,7 +380,7 @@ mod tests {
         assert!(file.contains("ENV UV_TOOL_BIN_DIR=/usr/local/bin\n"));
         let mise = file.find("mise use -g --yes 'deno'").unwrap();
         let uv_env = file.find("ENV UV_TOOL_BIN_DIR=/usr/local/bin\n").unwrap();
-        let cargo = file.find("RUN cargo install 'just'\n").unwrap();
+        let cargo = file.find("RUN cargo install --root /usr/local 'just'\n").unwrap();
         let bun = file.find("RUN bun install --global 'htmx'\n").unwrap();
         let uv_install = file.find("RUN uv tool install 'serena-agent'").unwrap();
         assert!(mise < cargo);
@@ -394,7 +406,7 @@ mod tests {
         .unwrap();
         let file = config.rendered();
         let rust = file.find("mise use -g --yes 'rust'\n").unwrap();
-        let install = file.find("RUN cargo install 'just'\n").unwrap();
+        let install = file.find("RUN cargo install --root /usr/local 'just'\n").unwrap();
         assert!(rust < install);
     }
 
