@@ -9,6 +9,7 @@ use crate::config::Config;
 
 mod agent;
 mod attach;
+mod audio;
 mod config;
 mod environment;
 mod harness;

@@ -85,6 +85,15 @@ pub(crate) fn run_session(
     if let Some(networking) = &config.networking {
         networking.apply_to(&mut command)?;
     }
+    if let Some(audio) = crate::audio::passthrough(config.audio) {
+        tracing::debug!(volume = %audio.volume, "passing host audio through");
+        command.args(["--volume", &audio.volume]);
+        for (key, value) in audio.env {
+            if !config.environment.contains_key(&key) {
+                command.args(["--env", &format!("{key}={value}")]);
+            }
+        }
+    }
     tracing::debug!(?command, "starting harness container");
     let status = command
         .arg(&config.image_tag)

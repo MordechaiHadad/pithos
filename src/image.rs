@@ -68,10 +68,16 @@ impl Config {
         let mut output = format!("FROM {}\nWORKDIR {}\n", self.base_image, self.workspace);
         output.push_str(&agent_preamble());
         output.push_str(&self.harness.install());
+        let mut packages = self.install.clone();
+        if self.audio {
+            packages.extend(["libasound2", "libpulse0"].map(str::to_string));
+            packages.sort();
+            packages.dedup();
+        }
         if let Some(line) = install_line(
             "apt-get update && apt-get install -y --no-install-recommends",
             " && rm -rf /var/lib/apt/lists/*",
-            &self.install,
+            &packages,
         ) {
             output.push_str(&line);
         }
@@ -861,5 +867,24 @@ mod tests {
         .unwrap();
         let file = config.rendered();
         assert!(file.contains("curl -fsSL 'https://example.com/install.sh' | sh"));
+    }
+
+    #[test]
+    fn audio_flag_installs_pulse_client_libraries() {
+        let config: Config = toml::from_str(
+            r#"
+            audio = true
+
+            [harness]
+            name = "opencode"
+            "#,
+        )
+        .unwrap();
+        let file = config.rendered();
+        assert!(file.contains("'libasound2'"));
+        assert!(file.contains("'libpulse0'"));
+
+        let plain: Config = toml::from_str("[harness]\nname = \"opencode\"").unwrap();
+        assert!(!plain.rendered().contains("libpulse0"));
     }
 }

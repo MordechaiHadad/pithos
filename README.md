@@ -338,6 +338,23 @@ whitelist = ["proxy.example.com"]
 use_default_whitelist = true
 ```
 
+### Audio
+
+`audio = true` forwards the host's PulseAudio-compatible socket into the
+session so harnesses such as OpenCode can play attention sounds. It requires
+a Linux host with a sound server exposing `$XDG_RUNTIME_DIR/pulse/native`
+(PipeWire provides this through `pipewire-pulse`, which is the default on
+modern distributions); other platforms currently run without sound.
+
+```toml
+audio = true
+```
+
+The image gains the `libasound2` and `libpulse0` client libraries when this
+is enabled, and `[environment]` can still override `XDG_RUNTIME_DIR` or
+`PULSE_SERVER`. Note that sharing a sound server socket grants the sandbox
+access to host audio output and potentially microphone input.
+
 ## Development
 
 Run formatting and tests with:

@@ -43,6 +43,8 @@ pub(crate) struct Config {
     pub(crate) diff_viewer: Option<String>,
     #[serde(default)]
     pub(crate) networking: Option<Networking>,
+    #[serde(default)]
+    pub(crate) audio: bool,
 }
 
 pub(crate) const DEFAULT_WHITELIST: &[&str] = &["opencode.ai", "mcp.exa.ai", "api.exa.ai"];
