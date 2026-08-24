@@ -1,3 +1,4 @@
+use eyre::WrapErr;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -19,6 +20,24 @@ struct HarnessPaths {
     state: PathBuf,
     config: PathBuf,
     credentials: PathBuf,
+}
+
+/// Access policy for a harness content entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Access {
+    /// Bind the host file read-only into the container.
+    ReadOnly,
+    /// Bind an existing host file read-write; contents sync but the file can
+    /// never be created, deleted, or replaced from inside the container.
+    Pinned,
+}
+
+/// A single host file exposed to the container through the content map.
+#[derive(Debug, Clone)]
+pub(crate) struct ContentEntry {
+    pub(crate) host: PathBuf,
+    pub(crate) target: String,
+    pub(crate) access: Access,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,24 +68,32 @@ impl Harness {
 
     pub fn mount(&self, command: &mut Command) -> eyre::Result<()> {
         match self {
-            Self::Opencode { credentials, .. } => {
+            Self::Opencode { .. } => {
                 let paths = self.paths()?;
-                fs::create_dir_all(&paths.data)?;
-                mount_path(
-                    command,
-                    &paths.data,
-                    &format!("{AGENT_HOME}/.local/share/opencode"),
-                    false,
-                )?;
-                fs::create_dir_all(&paths.state)?;
-                mount_path(
-                    command,
-                    &paths.state,
-                    &format!("{AGENT_HOME}/.local/state/opencode"),
-                    false,
-                )?;
+
+                command.args([
+                    "--tmpfs",
+                    &tmpfs_spec(&format!("{AGENT_HOME}/.local/share/opencode")),
+                ]);
+                command.args([
+                    "--tmpfs",
+                    &tmpfs_spec(&format!("{AGENT_HOME}/.local/state/opencode")),
+                ]);
                 command.args(["--tmpfs", &tmpfs_spec(&format!("{AGENT_HOME}/.cache"))]);
                 command.args(["--tmpfs", &tmpfs_spec(&format!("{AGENT_HOME}/.serena"))]);
+
+                for entry in self.content_map()? {
+                    let read_only = entry.access == Access::ReadOnly;
+                    if read_only {
+                        if !self.credentials_enabled() || !entry.host.exists() {
+                            continue;
+                        }
+                    } else {
+                        ensure_pinned_file(&entry.host)?;
+                    }
+                    mount_path(command, &entry.host, &entry.target, read_only)?;
+                }
+
                 if self.config_required() {
                     mount_if_exists(
                         command,
@@ -75,17 +102,64 @@ impl Harness {
                         true,
                     )?;
                 }
-                if *credentials {
-                    mount_if_exists(
-                        command,
-                        &paths.credentials,
-                        &format!("{AGENT_HOME}/.local/share/opencode/auth.json"),
-                        true,
-                    )?;
-                }
             }
         }
         Ok(())
+    }
+
+    /// Files the harness expects to persist across sessions, keyed by the
+    /// harness variant. Pinned entries are pre-created on the host so podman
+    /// binds regular files instead of inventing directories.
+    fn content_map(&self) -> eyre::Result<Vec<ContentEntry>> {
+        match self {
+            Self::Opencode { .. } => {
+                let paths = self.paths()?;
+                let share = format!("{AGENT_HOME}/.local/share/opencode");
+                let state = format!("{AGENT_HOME}/.local/state/opencode");
+                Ok(vec![
+                    ContentEntry {
+                        host: paths.credentials.clone(),
+                        target: format!("{share}/auth.json"),
+                        access: Access::ReadOnly,
+                    },
+                    ContentEntry {
+                        host: paths.data.join("opencode.db"),
+                        target: format!("{share}/opencode.db"),
+                        access: Access::Pinned,
+                    },
+                    ContentEntry {
+                        host: paths.data.join("opencode.db-wal"),
+                        target: format!("{share}/opencode.db-wal"),
+                        access: Access::Pinned,
+                    },
+                    ContentEntry {
+                        host: paths.data.join("opencode.db-shm"),
+                        target: format!("{share}/opencode.db-shm"),
+                        access: Access::Pinned,
+                    },
+                    ContentEntry {
+                        host: paths.state.join("kv.json"),
+                        target: format!("{state}/kv.json"),
+                        access: Access::Pinned,
+                    },
+                    ContentEntry {
+                        host: paths.state.join("session.json"),
+                        target: format!("{state}/session.json"),
+                        access: Access::Pinned,
+                    },
+                    ContentEntry {
+                        host: paths.state.join("model.json"),
+                        target: format!("{state}/model.json"),
+                        access: Access::Pinned,
+                    },
+                    ContentEntry {
+                        host: paths.state.join("prompt-history.jsonl"),
+                        target: format!("{state}/prompt-history.jsonl"),
+                        access: Access::Pinned,
+                    },
+                ])
+            }
+        }
     }
 
     fn paths(&self) -> eyre::Result<HarnessPaths> {
@@ -145,6 +219,22 @@ fn state_path(application: &str) -> eyre::Result<PathBuf> {
 fn home_path(relative: &str) -> eyre::Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| eyre::eyre!("cannot determine home directory"))?;
     Ok(home.join(relative))
+}
+
+/// Create an empty file if it does not exist, without truncating existing
+/// content.
+fn ensure_pinned_file(path: &Path) -> eyre::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .wrap_err_with(|| format!("cannot create directory {}", parent.display()))?;
+    }
+    fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .wrap_err_with(|| format!("cannot create pinned file {}", path.display()))?;
+    Ok(())
 }
 
 fn mount_if_exists(
@@ -274,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn state_dir_is_bind_mounted_not_tmpfs() {
+    fn runtime_folders_are_tmpfs_and_content_is_file_mounted() {
         let config: Config = toml::from_str(
             r#"
             [harness]
@@ -288,16 +378,98 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
+
+        let share_target = format!("{AGENT_HOME}/.local/share/opencode");
         let state_target = format!("{AGENT_HOME}/.local/state/opencode");
-        let tmpfs_spec = tmpfs_spec(&state_target);
+
         assert!(
-            args.iter()
-                .any(|arg| arg.ends_with(&format!(":{state_target}:rw"))),
-            "expected a read-write bind mount for {state_target}, got {args:?}"
+            args.iter().any(|arg| arg == &tmpfs_spec(&share_target)),
+            "expected {share_target} as tmpfs, got {args:?}"
         );
         assert!(
-            !args.iter().any(|arg| arg == &tmpfs_spec),
-            "state dir must not be a tmpfs, got {args:?}"
+            args.iter().any(|arg| arg == &tmpfs_spec(&state_target)),
+            "expected {state_target} as tmpfs, got {args:?}"
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.ends_with(&format!(":{share_target}:rw"))),
+            "share dir must not be a whole-directory bind mount, got {args:?}"
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.ends_with(&format!(":{state_target}:rw"))),
+            "state dir must not be a whole-directory bind mount, got {args:?}"
+        );
+
+        for name in [
+            "opencode.db",
+            "opencode.db-wal",
+            "opencode.db-shm",
+            "kv.json",
+            "session.json",
+            "model.json",
+            "prompt-history.jsonl",
+        ] {
+            let expected_suffix = format!("/{name}:rw");
+            assert!(
+                args.iter().any(|arg| arg.ends_with(&expected_suffix)),
+                "expected a pinned rw mount ending with {expected_suffix}, got {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn without_credentials_auth_json_is_not_mounted() {
+        let config: Config = toml::from_str(
+            r#"
+            [harness]
+            name = "opencode"
+
+            allowlist = { edit = "deny" }
+            "#,
+        )
+        .unwrap();
+        let mut command = Command::new("true");
+        config.harness.mount(&mut command).unwrap();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.iter().any(|arg| arg.contains("auth.json")),
+            "auth.json must not be mounted without credentials, got {args:?}"
+        );
+    }
+
+    #[test]
+    fn credentials_mount_auth_json_read_only() {
+        let config: Config = toml::from_str(
+            r#"
+            [harness]
+            name = "opencode"
+
+            credentials = true
+            "#,
+        )
+        .unwrap();
+        let auth_path = dirs::home_dir()
+            .unwrap()
+            .join(".local/share/opencode/auth.json");
+        if !auth_path.exists() {
+            fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+            fs::write(&auth_path, "{}").unwrap();
+        }
+        let mut command = Command::new("true");
+        config.harness.mount(&mut command).unwrap();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.iter().any(|arg| arg.ends_with("/auth.json:ro")),
+            "expected a read-only auth.json mount, got {args:?}"
         );
     }
 }

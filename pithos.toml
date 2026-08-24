@@ -27,6 +27,7 @@ mise = ["python", "uv"]
 [harness]
 name = "opencode"
 command = ["opencode", "/workspace"]
+credentials = true
 
 # [harness.allowlist]
 # edit = "allow"
@@ -37,9 +38,6 @@ command = ["opencode", "/workspace"]
 "curl --upload-file *" = "deny"
 "wget --post-file *" = "deny"
 "wget --post-data *" = "deny"
-
-[credentials]
-opencode = true
 
 # [networking]
 # Restrict egress from the agent container. Loaded into the container's
