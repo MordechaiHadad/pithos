@@ -1,11 +1,28 @@
+pub(crate) mod enforcement;
+pub(crate) mod hook;
+
 use eyre::Result;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::process::Command;
 
 use crate::config::Networking;
 
+pub(crate) use hook::append_oci_hooks_args;
+
 pub(crate) const TABLE: &str = "pithos-egress";
 pub(crate) const QUOTA_NAME: &str = "global_egress";
+
+/// Private IPv4 ranges that must be dropped while `block_private` is set:
+/// the three RFC1918 blocks plus IPv4 link-local (RFC3927).
+///
+/// Shared with the enforcement check so the ruleset and its verification can
+/// never drift apart.
+pub(crate) const PRIVATE_V4_RANGES: [&str; 4] = [
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "169.254.0.0/16",
+];
 
 impl Networking {
     pub(crate) fn effective_whitelist(&self) -> Vec<String> {
@@ -37,14 +54,14 @@ impl Networking {
         rules.push_str("    type filter hook output priority filter; policy accept;\n");
         rules.push_str("    oifname \"lo\" accept\n");
         if self.block_private {
-            const PRIVATE_V4: &str = "10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16";
+            let private_v4 = PRIVATE_V4_RANGES.join(", ");
             rules.push_str(&format!(
-                "    ip daddr {{ {PRIVATE_V4} }} tcp dport 53 accept\n"
+                "    ip daddr {{ {private_v4} }} tcp dport 53 accept\n"
             ));
             rules.push_str(&format!(
-                "    ip daddr {{ {PRIVATE_V4} }} udp dport 53 accept\n"
+                "    ip daddr {{ {private_v4} }} udp dport 53 accept\n"
             ));
-            rules.push_str(&format!("    ip daddr {{ {PRIVATE_V4} }} drop\n"));
+            rules.push_str(&format!("    ip daddr {{ {private_v4} }} drop\n"));
             rules.push_str("    ip6 daddr { fc00::/7, fe80::/10 } tcp dport 53 accept\n");
             rules.push_str("    ip6 daddr { fc00::/7, fe80::/10 } udp dport 53 accept\n");
             rules.push_str("    ip6 daddr { fc00::/7, fe80::/10 } drop\n");
@@ -62,8 +79,9 @@ impl Networking {
             ));
         }
         if let Some(payload_size_kb) = self.payload_size {
+            let payload_bytes = payload_size_kb.saturating_mul(1024);
             rules.push_str(&format!(
-                "    ct state established,related ct original bytes > {payload_size_kb} kbytes drop\n"
+                "    ct state established,related ct original bytes > {payload_bytes} drop\n"
             ));
         }
         if self.quota.is_some() {
@@ -79,7 +97,7 @@ impl Networking {
             tracing::debug!("networking disabled by configuration; skipping egress rules");
             return Ok(());
         }
-        crate::platform::verify_networking_support()?;
+        hook::verify_networking_support()?;
         let hosts = self.effective_whitelist();
         let (v4, v6) = resolve_hosts(&hosts);
         let rules = serialize_rules(&self.render_rules(&v4, &v6));
@@ -100,9 +118,10 @@ impl Networking {
 /// quotes, so it can be embedded in an OCI annotation value and extracted by
 /// the hook regardless of which filesystem the hook runs on.
 ///
-/// Statements are `;`-terminated; opening and closing braces are kept bare, so
-/// the output is the canonical compact form nft accepts (`nft list ruleset`
-/// minified) and, crucially, never emits `{;`, which nft rejects.
+/// Statements are `;`-terminated; opening braces are kept bare because the
+/// following statement supplies the separator, while closing braces are
+/// terminated like any other statement (`nft` requires a separator between
+/// sibling blocks, e.g. between a quota declaration and the next chain).
 pub(crate) fn serialize_rules(rules: &str) -> String {
     let mut statements = Vec::new();
     for line in rules.lines() {
@@ -110,7 +129,7 @@ pub(crate) fn serialize_rules(rules: &str) -> String {
         if line.is_empty() {
             continue;
         }
-        if line.ends_with('{') || line.ends_with(';') || line.ends_with('}') {
+        if line.ends_with('{') || line.ends_with(';') {
             statements.push(line);
         } else {
             statements.push(format!("{line};"));
@@ -157,6 +176,15 @@ fn render_addr_list(addrs: &[impl std::fmt::Display]) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn rendered_rules_cover_every_private_range() {
+        let mut networking = networking(None, None);
+        networking.block_private = true;
+        let rules = networking.render_rules(&[], &[]);
+        assert!(PRIVATE_V4_RANGES.iter().all(|range| rules.contains(range)));
+        assert_eq!(rules.matches("} drop").count(), 2);
+    }
+
     fn v4(value: &str) -> Ipv4Addr {
         value.parse().unwrap()
     }
@@ -188,7 +216,7 @@ mod tests {
     oifname "lo" accept
     ip daddr { 1.2.3.4, 5.6.7.8 } tcp dport 443 accept
     ip6 daddr { 2001:db8::1 } tcp dport 443 accept
-    ct state established,related ct original bytes > 8 kbytes drop
+    ct state established,related ct original bytes > 8192 drop
     quota name "global_egress" drop
   }
 }
@@ -206,7 +234,7 @@ mod tests {
   chain output {
     type filter hook output priority filter; policy accept;
     oifname "lo" accept
-    ct state established,related ct original bytes > 8 kbytes drop
+    ct state established,related ct original bytes > 8192 drop
   }
 }
 "#
@@ -335,9 +363,11 @@ mod tests {
         assert!(!serialized.contains("{;"));
         assert!(!serialized.contains('\\'));
         assert!(serialized.starts_with("table inet pithos-egress {"));
-        assert!(serialized.ends_with('}'));
+        assert!(serialized.ends_with("};"));
         assert!(serialized.contains("oifname lo accept;"));
-        assert!(serialized.contains("quota name global_egress drop"));
+        assert!(serialized.contains("over 102400 kbytes };"));
+        assert!(serialized.contains("ct original bytes > 8192 drop;"));
+        assert!(serialized.contains("quota name global_egress drop;"));
         assert!(serialized.contains("chain output {"));
     }
 }

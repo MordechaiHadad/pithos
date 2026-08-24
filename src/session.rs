@@ -8,6 +8,16 @@ use crate::config::Config;
 use crate::registry;
 use crate::sandbox::{TempDir, apply_tree, copy_tree, has_changes};
 
+/// First arguments of the `podman run` invocation: explicit OCI hook
+/// directories (a no-op where remote clients cannot take them), then the
+/// subcommand itself.
+fn run_arg_prefix() -> Vec<String> {
+    let mut prefix = Vec::new();
+    crate::networking::append_oci_hooks_args(&mut prefix);
+    prefix.push("run".to_string());
+    prefix
+}
+
 #[tracing::instrument(skip_all, fields(repository = %repository.display()))]
 pub(crate) fn run_session(
     config: &Config,
@@ -46,8 +56,8 @@ pub(crate) fn run_session(
         sandbox.0.display()
     );
     let mut command = Command::new("podman");
+    command.args(run_arg_prefix());
     command.args([
-        "run",
         "--rm",
         "--interactive",
         "--tty",
@@ -92,6 +102,7 @@ pub(crate) fn run_session(
             }
         }
     }
+    crate::networking::enforcement::spawn_check(&config.networking, record.container_name.clone());
     tracing::debug!(?command, "starting harness container");
     let status = command
         .arg(&config.image_tag)
@@ -407,6 +418,22 @@ fn clean_headers(diff: &str, relative: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn hook_dirs_are_passed_before_the_run_subcommand() {
+        let prefix = run_arg_prefix();
+        assert_eq!(prefix.last().map(String::as_str), Some("run"));
+        assert!(!prefix.is_empty());
+        assert_eq!(prefix.first().map(String::as_str), Some("--hooks-dir"));
+        let hook_dir_count = prefix.iter().filter(|arg| *arg == "--hooks-dir").count();
+        assert_eq!(hook_dir_count, 3);
+        assert!(
+            prefix[..prefix.len() - 1]
+                .chunks(2)
+                .all(|pair| pair[0] == "--hooks-dir" && !pair[1].is_empty())
+        );
+    }
 
     fn write(root: &Path, relative: &str, content: &str) {
         let path = root.join(relative);
