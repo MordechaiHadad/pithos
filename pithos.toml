@@ -2,16 +2,14 @@ base_image = "node:22-bookworm-slim"
 image_tag = "localhost/pithos-opencode:latest"
 workspace = "/workspace"
 
-exclusions = ["target", ".serena"]
+ephemeral = ["target", ".serena"]
 
+mise = ["deno"]
 toolchains = ["rust", "python"]
 cargo = ["just"]
 npm = []
 bun = []
 uv = [{ name = "serena-agent", python = "3.13", run = "serena init" }]
-downloads = [
-    { url = "https://deno.land/install.sh", env = { DENO_INSTALL = "/usr/local" } },
-]
 
 diff_viewer = "nvim -c \"Neotree git_status dir={dir}\""
 

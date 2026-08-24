@@ -34,7 +34,7 @@ pub(crate) fn run_session(
         config.build_image()?;
     }
     let sandbox = TempDir::create("pithos-workspace")?;
-    copy_tree(repository, &sandbox.0)?;
+    copy_tree(repository, &sandbox.0, &config.ignore)?;
     strip_remotes(&sandbox.0)?;
     let current_user = format!(
         "{}:{}",
@@ -111,7 +111,7 @@ pub(crate) fn run_session(
         .wrap_err("could not execute podman run")?;
     tracing::debug!(%status, "harness container exited");
     registry::remove(&record.id);
-    let changed = has_changes(repository, &sandbox.0, &config.exclusions)?;
+    let changed = has_changes(repository, &sandbox.0, &unmanaged(config))?;
     tracing::trace!(changed = changed.len(), "change detection finished");
     let apply = if auto_yes {
         true
@@ -124,7 +124,7 @@ pub(crate) fn run_session(
     };
     tracing::debug!(apply, "review decision");
     if apply {
-        apply_tree(&sandbox.0, repository, &config.exclusions)?;
+        apply_tree(&sandbox.0, repository, &unmanaged(config))?;
     }
     if !status.success() {
         bail!("harness exited with {status}")
@@ -219,7 +219,7 @@ fn view_changes(
 ) -> Result<()> {
     if let Some(viewer) = &config.diff_viewer {
         if session_view.is_none() {
-            *session_view = Some(build_session_view(source, sandbox, &config.exclusions)?);
+            *session_view = Some(build_session_view(source, sandbox, &unmanaged(config))?);
         }
         let view = session_view.as_ref().expect("session view built above");
         run_viewer(viewer, &view.0.join("repo"))
@@ -228,7 +228,7 @@ fn view_changes(
     }
 }
 
-fn build_session_view(source: &Path, sandbox: &Path, exclusions: &[String]) -> Result<TempDir> {
+fn build_session_view(source: &Path, sandbox: &Path, unmanaged: &[String]) -> Result<TempDir> {
     let temp = TempDir::create("pithos-session")?;
     let bundle_path = temp.0.join("session.bundle").display().to_string();
     let branch = current_branch(source)?;
@@ -238,8 +238,14 @@ fn build_session_view(source: &Path, sandbox: &Path, exclusions: &[String]) -> R
     let repo_path = repo_dir.display().to_string();
     git_ok(source, &["clone", &bundle_path, &repo_path])
         .wrap_err("could not clone session bundle")?;
-    apply_tree(sandbox, &repo_dir, exclusions)?;
+    apply_tree(sandbox, &repo_dir, unmanaged)?;
     Ok(temp)
+}
+
+fn unmanaged(config: &Config) -> Vec<String> {
+    let mut paths = config.ephemeral.clone();
+    paths.extend(config.ignore.iter().cloned());
+    paths
 }
 
 fn current_branch(sandbox: &Path) -> Result<String> {
@@ -569,7 +575,7 @@ mod tests {
         let source = TempDir::create("pithos-test-view-source").unwrap();
         commit_base(&source.0);
         let sandbox = TempDir::create("pithos-test-view-sandbox").unwrap();
-        copy_tree(&source.0, &sandbox.0).unwrap();
+        copy_tree(&source.0, &sandbox.0, &[]).unwrap();
         write(&sandbox.0, "file.txt", "changed");
 
         let view = build_session_view(&source.0, &sandbox.0, &[]).unwrap();
@@ -591,7 +597,7 @@ mod tests {
         let source = TempDir::create("pithos-test-view-committed-source").unwrap();
         commit_base(&source.0);
         let sandbox = TempDir::create("pithos-test-view-committed-sandbox").unwrap();
-        copy_tree(&source.0, &sandbox.0).unwrap();
+        copy_tree(&source.0, &sandbox.0, &[]).unwrap();
         write(&sandbox.0, "file.txt", "changed");
         git_ok(&sandbox.0, &["add", "-A"]).unwrap();
         git_ok(
@@ -622,11 +628,11 @@ mod tests {
     }
 
     #[test]
-    fn build_session_view_respects_exclusions() {
+    fn build_session_view_respects_unmanaged_paths() {
         let source = TempDir::create("pithos-test-view-exclude-source").unwrap();
         commit_base(&source.0);
         let sandbox = TempDir::create("pithos-test-view-exclude").unwrap();
-        copy_tree(&source.0, &sandbox.0).unwrap();
+        copy_tree(&source.0, &sandbox.0, &[]).unwrap();
         write(&sandbox.0, "keep.txt", "changed");
         write(&sandbox.0, "secret.txt", "changed too");
 

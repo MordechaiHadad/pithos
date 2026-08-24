@@ -1,5 +1,4 @@
-use eyre::Result;
-use std::env;
+use eyre::{Result, eyre};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -24,17 +23,35 @@ impl Drop for TempDir {
 
 fn temporary_path(prefix: &str) -> Result<PathBuf> {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    Ok(env::temp_dir().join(format!("{prefix}-{}-{stamp}", std::process::id())))
+    let base = dirs::data_dir()
+        .ok_or_else(|| eyre!("cannot determine data directory"))?
+        .join("pithos")
+        .join("tmp");
+    fs::create_dir_all(&base)?;
+    Ok(base.join(format!("{prefix}-{}-{stamp}", std::process::id())))
 }
 
-pub(crate) fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn copy_tree(source: &Path, destination: &Path, ignore: &[String]) -> Result<()> {
+    copy_tree_at(source, destination, Path::new(""), ignore)
+}
+
+fn copy_tree_at(
+    source: &Path,
+    destination: &Path,
+    relative: &Path,
+    ignore: &[String],
+) -> Result<()> {
     fs::create_dir_all(destination)?;
     for entry in fs::read_dir(source)? {
         let entry = entry?;
+        let child_relative = relative.join(entry.file_name());
+        if matches_any(&child_relative, ignore) {
+            continue;
+        }
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
         if fs::symlink_metadata(&source_path)?.file_type().is_dir() {
-            copy_tree(&source_path, &destination_path)?;
+            copy_tree_at(&source_path, &destination_path, &child_relative, ignore)?;
         } else {
             copy_entry(&source_path, &destination_path)?;
         }
@@ -73,7 +90,7 @@ fn atomic_copy(source: &Path, destination: &Path) -> Result<()> {
 pub(crate) fn has_changes(
     source: &Path,
     sandbox: &Path,
-    exclusions: &[String],
+    unmanaged: &[String],
 ) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     collect_paths(source, Path::new(""), &mut paths)?;
@@ -82,7 +99,7 @@ pub(crate) fn has_changes(
     paths.dedup();
     let mut changed = Vec::new();
     for relative in paths {
-        if is_excluded(&relative, exclusions) {
+        if is_excluded(&relative, unmanaged) {
             continue;
         }
         if !same_file(&source.join(&relative), &sandbox.join(&relative))? {
@@ -92,12 +109,21 @@ pub(crate) fn has_changes(
     Ok(changed)
 }
 
-fn is_excluded(relative: &Path, exclusions: &[String]) -> bool {
+fn is_excluded(relative: &Path, unmanaged: &[String]) -> bool {
     relative == Path::new(".git")
         || relative.starts_with(".git/")
-        || exclusions.iter().any(|exclusion| {
-            relative == Path::new(exclusion) || relative.starts_with(format!("{exclusion}/"))
-        })
+        || matches_any(relative, unmanaged)
+}
+
+fn matches_any(relative: &Path, patterns: &[String]) -> bool {
+    let components: Vec<_> = relative.components().map(|c| c.as_os_str()).collect();
+    patterns.iter().any(|pattern| {
+        let parts: Vec<_> = Path::new(pattern)
+            .components()
+            .map(|c| c.as_os_str())
+            .collect();
+        components.windows(parts.len()).any(|window| window == parts.as_slice())
+    })
 }
 
 fn collect_paths(root: &Path, relative: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
@@ -140,20 +166,20 @@ fn same_file(first: &Path, second: &Path) -> Result<bool> {
     }
 }
 
-pub(crate) fn apply_tree(source: &Path, destination: &Path, exclusions: &[String]) -> Result<()> {
-    apply_tree_at(source, destination, Path::new(""), exclusions)
+pub(crate) fn apply_tree(source: &Path, destination: &Path, unmanaged: &[String]) -> Result<()> {
+    apply_tree_at(source, destination, Path::new(""), unmanaged)
 }
 
 fn apply_tree_at(
     source: &Path,
     destination: &Path,
     relative: &Path,
-    exclusions: &[String],
+    unmanaged: &[String],
 ) -> Result<()> {
     for entry in fs::read_dir(destination)? {
         let entry = entry?;
         let child_relative = relative.join(entry.file_name());
-        if is_excluded(&child_relative, exclusions) {
+        if is_excluded(&child_relative, unmanaged) {
             continue;
         }
         if !source.join(entry.file_name()).exists() {
@@ -164,14 +190,14 @@ fn apply_tree_at(
     for entry in fs::read_dir(source)? {
         let entry = entry?;
         let child_relative = relative.join(entry.file_name());
-        if is_excluded(&child_relative, exclusions) {
+        if is_excluded(&child_relative, unmanaged) {
             continue;
         }
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
         if entry.file_type()?.is_dir() {
             fs::create_dir_all(&destination_path)?;
-            apply_tree_at(&source_path, &destination_path, &child_relative, exclusions)?;
+            apply_tree_at(&source_path, &destination_path, &child_relative, unmanaged)?;
         } else {
             copy_entry(&source_path, &destination_path)?;
         }
@@ -268,7 +294,7 @@ mod tests {
         write_file(&source.0, "sub/nested.txt", "nested");
         make_symlink(&source.0, "link", "root.txt");
 
-        copy_tree(&source.0, &destination.0).unwrap();
+        copy_tree(&source.0, &destination.0, &[]).unwrap();
 
         assert_trees_equal(&source.0, &destination.0);
         let link_metadata = fs::symlink_metadata(destination.0.join("link")).unwrap();
@@ -277,6 +303,21 @@ mod tests {
             fs::read_link(destination.0.join("link")).unwrap(),
             Path::new("root.txt")
         );
+    }
+
+    #[test]
+    fn copy_tree_skips_ignored_but_keeps_ephemeral() {
+        let source = test_temp_dir("pithos-test-copy-ignore-source");
+        let destination = test_temp_dir("pithos-test-copy-ignore-destination");
+        write_file(&source.0, "kept.txt", "kept");
+        write_file(&source.0, "ephemeral/cache.bin", "cache");
+        write_file(&source.0, "ignored/scratch.bin", "scratch");
+
+        copy_tree(&source.0, &destination.0, &["ignored".to_string()]).unwrap();
+
+        assert!(destination.0.join("kept.txt").exists());
+        assert!(destination.0.join("ephemeral/cache.bin").exists());
+        assert!(!destination.0.join("ignored").exists());
     }
 
     #[test]
@@ -311,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn has_changes_detects_add_modify_delete_and_exclusions() {
+    fn has_changes_detects_add_modify_delete_and_unmanaged() {
         let host = test_temp_dir("pithos-test-changes-host");
         let sandbox = test_temp_dir("pithos-test-changes-sandbox");
         write_file(&host.0, "modified.txt", "host");
@@ -319,12 +360,12 @@ mod tests {
         write_file(&host.0, "unchanged.txt", "same");
         write_file(&sandbox.0, "unchanged.txt", "same");
         write_file(&host.0, "deleted.txt", "gone");
-        write_file(&host.0, "excluded/config.txt", "secret");
-        write_file(&sandbox.0, "excluded/config.txt", "also secret");
+        write_file(&host.0, "unmanaged/config.txt", "secret");
+        write_file(&sandbox.0, "unmanaged/config.txt", "also secret");
         write_file(&sandbox.0, "added.txt", "new");
-        let exclusions = vec!["excluded".to_string()];
+        let unmanaged = vec!["unmanaged".to_string()];
 
-        let changed = has_changes(&host.0, &sandbox.0, &exclusions).unwrap();
+        let changed = has_changes(&host.0, &sandbox.0, &unmanaged).unwrap();
 
         assert_eq!(
             changed,
@@ -356,24 +397,24 @@ mod tests {
     }
 
     #[test]
-    fn apply_tree_respects_exclusions() {
+    fn apply_tree_respects_unmanaged() {
         let host = test_temp_dir("pithos-test-exclude-host");
         let sandbox = test_temp_dir("pithos-test-exclude-sandbox");
         write_file(&host.0, "keep.txt", "host");
         write_file(&sandbox.0, "keep.txt", "sandbox");
-        write_file(&host.0, "secret/config.txt", "host secret");
-        write_file(&sandbox.0, "secret/config.txt", "sandbox secret");
+        write_file(&host.0, "unmanaged/config.txt", "host secret");
+        write_file(&sandbox.0, "unmanaged/config.txt", "sandbox secret");
         write_file(&sandbox.0, "added.txt", "new");
-        let exclusions = vec!["secret".to_string()];
+        let unmanaged = vec!["unmanaged".to_string()];
 
-        apply_tree(&sandbox.0, &host.0, &exclusions).unwrap();
+        apply_tree(&sandbox.0, &host.0, &unmanaged).unwrap();
 
         assert_eq!(
             fs::read_to_string(host.0.join("keep.txt")).unwrap(),
             "sandbox"
         );
         assert_eq!(
-            fs::read_to_string(host.0.join("secret/config.txt")).unwrap(),
+            fs::read_to_string(host.0.join("unmanaged/config.txt")).unwrap(),
             "host secret"
         );
         assert_eq!(fs::read_to_string(host.0.join("added.txt")).unwrap(), "new");
@@ -381,20 +422,41 @@ mod tests {
 
     #[test]
     fn is_excluded_matches_exact_and_children() {
-        let exclusions = vec![".git".to_string(), "target".to_string()];
-        assert!(is_excluded(Path::new(".git"), &exclusions));
-        assert!(is_excluded(Path::new(".git/HEAD"), &exclusions));
-        assert!(is_excluded(Path::new("target"), &exclusions));
-        assert!(is_excluded(Path::new("target/debug/pithos"), &exclusions));
-        assert!(!is_excluded(Path::new("src/main.rs"), &exclusions));
-        assert!(!is_excluded(Path::new(".github"), &exclusions));
-        assert!(!is_excluded(Path::new("targeting"), &exclusions));
+        let unmanaged = vec![".git".to_string(), "target".to_string()];
+        assert!(is_excluded(Path::new(".git"), &unmanaged));
+        assert!(is_excluded(Path::new(".git/HEAD"), &unmanaged));
+        assert!(is_excluded(Path::new("target"), &unmanaged));
+        assert!(is_excluded(Path::new("target/debug/pithos"), &unmanaged));
+        assert!(!is_excluded(Path::new("src/main.rs"), &unmanaged));
+        assert!(!is_excluded(Path::new(".github"), &unmanaged));
+        assert!(!is_excluded(Path::new("targeting"), &unmanaged));
+    }
+
+    #[test]
+    fn matches_any_matches_nested_paths() {
+        let patterns = vec!["target".to_string()];
+        assert!(matches_any(
+            Path::new("long/ass/path/my/dude/target"),
+            &patterns
+        ));
+        assert!(matches_any(
+            Path::new("compiler/target/debug/deep.o"),
+            &patterns
+        ));
+        assert!(!matches_any(
+            Path::new("compiler/notarget/deep.o"),
+            &patterns
+        ));
+        let nested = vec!["sub/cache".to_string()];
+        assert!(matches_any(Path::new("sub/cache/data.bin"), &nested));
+        assert!(matches_any(Path::new("deep/sub/cache/x"), &nested));
+        assert!(!matches_any(Path::new("sub/caching/x"), &nested));
     }
 
     #[test]
     fn is_excluded_always_ignores_git_even_when_absent_from_list() {
-        let exclusions = vec!["target".to_string(), ".serena".to_string()];
-        assert!(is_excluded(Path::new(".git"), &exclusions));
-        assert!(is_excluded(Path::new(".git/objects/abc"), &exclusions));
+        let unmanaged = vec!["target".to_string(), ".serena".to_string()];
+        assert!(is_excluded(Path::new(".git"), &unmanaged));
+        assert!(is_excluded(Path::new(".git/objects/abc"), &unmanaged));
     }
 }

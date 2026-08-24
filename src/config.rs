@@ -37,8 +37,10 @@ pub(crate) struct Config {
     pub(crate) global_toolchains: BTreeMap<String, ToolchainDef>,
     #[serde(default)]
     pub(crate) environment: BTreeMap<String, String>,
-    #[serde(default = "default_exclusions")]
-    pub(crate) exclusions: Vec<String>,
+    #[serde(default)]
+    pub(crate) ephemeral: Vec<String>,
+    #[serde(default)]
+    pub(crate) ignore: Vec<String>,
     #[serde(default)]
     pub(crate) diff_viewer: Option<String>,
     #[serde(default)]
@@ -154,10 +156,6 @@ pub(crate) struct Download {
     pub(crate) url: String,
     #[serde(default)]
     pub(crate) env: BTreeMap<String, String>,
-}
-
-fn default_exclusions() -> Vec<String> {
-    vec![]
 }
 
 fn default_install() -> Vec<String> {
