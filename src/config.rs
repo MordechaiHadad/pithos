@@ -42,12 +42,22 @@ pub(crate) struct Config {
     #[serde(default)]
     pub(crate) diff_viewer: Option<String>,
     #[serde(default)]
-    pub(crate) networking: Option<Networking>,
+    pub(crate) networking: Networking,
     #[serde(default)]
     pub(crate) audio: bool,
 }
 
-pub(crate) const DEFAULT_WHITELIST: &[&str] = &["opencode.ai", "mcp.exa.ai", "api.exa.ai"];
+pub(crate) const DEFAULT_WHITELIST: &[&str] = &[
+    "opencode.ai",
+    "mcp.exa.ai",
+    "api.exa.ai",
+    "api.parallel.ai",
+    "search.parallel.ai",
+    "task-mcp.parallel.ai",
+    "api.tavily.com",
+    "api.search.brave.com",
+    "google.serper.dev",
+];
 
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -76,20 +86,52 @@ pub(crate) struct ToolchainDef {
     pub(crate) downloads: Vec<Download>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+fn default_enabled() -> bool {
+    true
+}
+
+/// Per-connection payload cap in KiB.
+fn default_payload_size() -> Option<u64> {
+    Some(65_536)
+}
+
+/// Per-session egress budget in KiB.
+fn default_quota() -> Option<u64> {
+    Some(2_097_152)
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Networking {
-    /// Per-connection upload cap in KiB; unset means no cap.
-    #[serde(default)]
+    #[serde(default = "default_enabled")]
+    pub(crate) enabled: bool,
+    /// Per-connection payload cap in KiB.
+    #[serde(default = "default_payload_size")]
     pub(crate) payload_size: Option<u64>,
-    /// Per-session egress budget in KiB; unset means no quota.
-    #[serde(default)]
+    /// Per-session egress budget in KiB.
+    #[serde(default = "default_quota")]
     pub(crate) quota: Option<u64>,
     /// Extra hosts that bypass the cap and quota; appended to DEFAULT_WHITELIST.
     #[serde(default)]
     pub(crate) whitelist: Vec<String>,
     #[serde(default = "default_use_default_whitelist")]
     pub(crate) use_default_whitelist: bool,
+    /// Drop traffic to RFC1918/link-local destinations except DNS (port 53).
+    #[serde(default = "default_enabled")]
+    pub(crate) block_private: bool,
+}
+
+impl Default for Networking {
+    fn default() -> Self {
+        Self {
+            enabled: default_enabled(),
+            payload_size: default_payload_size(),
+            quota: default_quota(),
+            whitelist: Vec::new(),
+            use_default_whitelist: true,
+            block_private: true,
+        }
+    }
 }
 
 fn default_use_default_whitelist() -> bool {
@@ -267,16 +309,11 @@ impl Config {
         if self.environment.contains_key("diff_viewer") {
             bail!("diff_viewer must be a top-level key, not inside [environment]")
         }
-        if let Some(networking) = &self.networking {
-            if networking.payload_size.is_none() && networking.quota.is_none() {
-                bail!("[networking] requires at least payload_size or quota")
-            }
-            if networking.payload_size == Some(0) {
-                bail!("networking.payload_size must be greater than 0")
-            }
-            if networking.quota == Some(0) {
-                bail!("networking.quota must be greater than 0")
-            }
+        if self.networking.payload_size == Some(0) {
+            bail!("networking.payload_size must be greater than 0")
+        }
+        if self.networking.quota == Some(0) {
+            bail!("networking.quota must be greater than 0")
         }
         Ok(())
     }
@@ -287,7 +324,7 @@ fn starter_config(toolchain: Option<String>) -> String {
         .map(|name| format!("toolchains = [\"{name}\"]\n"))
         .unwrap_or_default();
     format!(
-        "base_image = \"node:22-bookworm-slim\"\nimage_tag = \"localhost/pithos-opencode:latest\"\nworkspace = \"/workspace\"\n\n{toolchains}\n# Install tools from the mise registry (supports name@version and backend:name):\n# mise = [\"neovim\", \"lua-language-server\"]\n# Define your own toolchains:\n# [toolchain.example]\n# install = [\"curl\"]\n# env = {{ PATH = \"/opt/example/bin:$PATH\" }}\n# run = [\"curl -fsSL https://example.com/install.sh | sh\"]\n# extra = [\"example --version\"]\n\n[harness]\nname = \"opencode\"\ncommand = [\"opencode\", \"/workspace\"]\n"
+        "base_image = \"node:22-bookworm-slim\"\nimage_tag = \"localhost/pithos-opencode:latest\"\nworkspace = \"/workspace\"\n\n{toolchains}\n# Install tools from the mise registry (supports name@version and backend:name):\n# mise = [\"neovim\", \"lua-language-server\"]\n# Define your own toolchains:\n# [toolchain.example]\n# install = [\"curl\"]\n# env = {{ PATH = \"/opt/example/bin:$PATH\" }}\n# run = [\"curl -fsSL https://example.com/install.sh | sh\"]\n# extra = [\"example --version\"]\n\n[harness]\nname = \"opencode\"\ncommand = [\"opencode\", \"/workspace\"]\n\n# Egress is capped by default (64 MiB per connection, 2 GiB per session,\n# private networks blocked). Override any knob:\n# [networking]\n# payload_size = 65536\n# quota = 2097152\n"
     )
 }
 
@@ -731,51 +768,71 @@ mod tests {
     }
 
     #[test]
-    fn networking_requires_at_least_one_limiter() {
-        assert!(
-            Config::parse(
-                r#"
+    fn networking_defaults_apply_when_section_absent() {
+        let config = Config::parse(
+            r#"
+            [harness]
+            name = "opencode"
+            "#,
+        );
+        assert!(config.networking.enabled);
+        assert_eq!(config.networking.payload_size, Some(65_536));
+        assert_eq!(config.networking.quota, Some(2_097_152));
+        assert!(config.networking.use_default_whitelist);
+        assert!(config.networking.block_private);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn empty_networking_section_still_gets_defaults() {
+        let config = Config::parse(
+            r#"
             [harness]
             name = "opencode"
 
             [networking]
-            payload_size = 8
             "#,
-            )
-            .validate()
-            .is_ok()
         );
-        assert!(
-            Config::parse(
-                r#"
+        assert!(config.networking.enabled);
+        assert_eq!(config.networking.payload_size, Some(65_536));
+        assert_eq!(config.networking.quota, Some(2_097_152));
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn partial_networking_section_fills_missing_knobs() {
+        let config = Config::parse(
+            r#"
             [harness]
             name = "opencode"
 
             [networking]
             quota = 102400
             "#,
-            )
-            .validate()
-            .is_ok()
         );
-        assert!(
-            Config::parse(
-                r#"
+        assert_eq!(config.networking.quota, Some(102400));
+        assert_eq!(config.networking.payload_size, Some(65_536));
+        assert!(config.networking.enabled);
+    }
+
+    #[test]
+    fn networking_can_be_disabled_explicitly() {
+        let config = Config::parse(
+            r#"
             [harness]
             name = "opencode"
 
             [networking]
+            enabled = false
             "#,
-            )
-            .validate()
-            .is_err()
         );
+        assert!(!config.networking.enabled);
     }
 
     #[test]
     fn networking_rejects_zero_and_negative_limits() {
         assert!(
-            Config::parse(
+            Config::try_parse(
                 r#"
             [harness]
             name = "opencode"
@@ -784,11 +841,12 @@ mod tests {
             payload_size = 0
             "#,
             )
+            .unwrap()
             .validate()
             .is_err()
         );
         assert!(
-            Config::parse(
+            Config::try_parse(
                 r#"
             [harness]
             name = "opencode"
@@ -797,6 +855,7 @@ mod tests {
             quota = 0
             "#,
             )
+            .unwrap()
             .validate()
             .is_err()
         );
@@ -858,11 +917,20 @@ mod tests {
             quota = 102400
             "#,
         );
-        let networking = config.networking.unwrap();
-        assert!(networking.use_default_whitelist);
+        assert!(config.networking.use_default_whitelist);
         assert_eq!(
             DEFAULT_WHITELIST,
-            ["opencode.ai", "mcp.exa.ai", "api.exa.ai"]
+            [
+                "opencode.ai",
+                "mcp.exa.ai",
+                "api.exa.ai",
+                "api.parallel.ai",
+                "search.parallel.ai",
+                "task-mcp.parallel.ai",
+                "api.tavily.com",
+                "api.search.brave.com",
+                "google.serper.dev",
+            ]
         );
     }
 }

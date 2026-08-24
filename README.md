@@ -314,24 +314,35 @@ identically. Entries in `[environment]` take precedence over forwarded values.
 
 ### Networking
 
-The optional `[networking]` table restricts container egress through nftables.
-At least one of `payload_size` or `quota` must be set, and values are in KiB.
+Egress is restricted by default: every session runs under nftables rules
+without any configuration. Values are in KiB.
 
-`payload_size` limits the original payload size of each connection.
+`payload_size` limits the original payload size of each connection
+(default 65536, 64 MiB).
 
-`quota` sets the total egress budget for the session.
+`quota` sets the total egress budget for the session
+(default 2097152, 2 GiB).
+
+`block_private` drops traffic to RFC1918/link-local destinations so sessions
+cannot reach the host LAN, router, or NAS. DNS (port 53) remains allowed.
+It is `true` by default.
 
 `whitelist` adds HTTPS hosts that bypass these limits.
 
-`use_default_whitelist` controls the default hosts. It is `true` by default
-and includes `opencode.ai`, `mcp.exa.ai`, and `api.exa.ai`.
+`use_default_whitelist` controls the built-in fast-lane hosts. It is `true`
+by default and includes `opencode.ai`, the Exa search APIs (`mcp.exa.ai`,
+`api.exa.ai`), the Parallel Web Systems search endpoints (`api.parallel.ai`,
+`search.parallel.ai`, `task-mcp.parallel.ai`), and common agent search
+providers (`api.tavily.com`, `api.search.brave.com`, `google.serper.dev`).
 
 ```toml
 [networking]
-payload_size = 8
-quota = 102400
+enabled = false # only way to turn restrictions off
+payload_size = 65536
+quota = 2097152
 whitelist = ["proxy.example.com"]
 use_default_whitelist = true
+block_private = true
 ```
 
 ### Audio

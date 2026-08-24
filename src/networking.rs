@@ -36,6 +36,19 @@ impl Networking {
         rules.push_str("\n  chain output {\n");
         rules.push_str("    type filter hook output priority filter; policy accept;\n");
         rules.push_str("    oifname \"lo\" accept\n");
+        if self.block_private {
+            const PRIVATE_V4: &str = "10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16";
+            rules.push_str(&format!(
+                "    ip daddr {{ {PRIVATE_V4} }} tcp dport 53 accept\n"
+            ));
+            rules.push_str(&format!(
+                "    ip daddr {{ {PRIVATE_V4} }} udp dport 53 accept\n"
+            ));
+            rules.push_str(&format!("    ip daddr {{ {PRIVATE_V4} }} drop\n"));
+            rules.push_str("    ip6 daddr { fc00::/7, fe80::/10 } tcp dport 53 accept\n");
+            rules.push_str("    ip6 daddr { fc00::/7, fe80::/10 } udp dport 53 accept\n");
+            rules.push_str("    ip6 daddr { fc00::/7, fe80::/10 } drop\n");
+        }
         if !v4_whitelist.is_empty() {
             rules.push_str(&format!(
                 "    ip daddr {{ {} }} tcp dport 443 accept\n",
@@ -62,6 +75,10 @@ impl Networking {
 
     #[tracing::instrument(skip(self, command))]
     pub(crate) fn apply_to(&self, command: &mut Command) -> Result<()> {
+        if !self.enabled {
+            tracing::debug!("networking disabled by configuration; skipping egress rules");
+            return Ok(());
+        }
         crate::platform::verify_networking_support()?;
         let hosts = self.effective_whitelist();
         let (v4, v6) = resolve_hosts(&hosts);
@@ -150,10 +167,12 @@ mod tests {
 
     fn networking(payload_size: Option<u64>, quota: Option<u64>) -> Networking {
         Networking {
+            enabled: true,
             payload_size,
             quota,
             whitelist: Vec::new(),
             use_default_whitelist: true,
+            block_private: false,
         }
     }
 
@@ -224,6 +243,36 @@ mod tests {
     }
 
     #[test]
+    fn private_ranges_drop_with_dns_exception() {
+        let mut networking = networking(Some(8), Some(102400));
+        networking.block_private = true;
+        let rules = networking.render_rules(&[], &[]);
+        assert!(rules.contains("ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } tcp dport 53 accept"));
+        assert!(rules.contains("udp dport 53 accept"));
+        assert!(rules.contains(
+            "ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } drop"
+        ));
+        assert!(rules.contains("ip6 daddr { fc00::/7, fe80::/10 } drop"));
+
+        let drops = rules.matches("} drop").count();
+        let dns_accepts = rules.matches("dport 53 accept").count();
+        assert_eq!(drops, 2);
+        assert_eq!(dns_accepts, 4);
+
+        // Private drops precede the whitelist accepts so they win conflicts.
+        let first_private = rules.find("169.254.0.0/16").unwrap();
+        if let Some(whitelist_pos) = rules.find("tcp dport 443 accept") {
+            assert!(first_private < whitelist_pos);
+        }
+    }
+
+    #[test]
+    fn disabled_networking_is_the_default_for_rendering() {
+        let rules = networking(Some(8), Some(102400)).render_rules(&[], &[]);
+        assert!(!rules.contains("169.254.0.0/16"));
+    }
+
+    #[test]
     fn whitelist_rules_precede_cap_and_quota() {
         let rules =
             networking(Some(8), Some(102400)).render_rules(&[v4("1.2.3.4")], &[v6("2001:db8::1")]);
@@ -237,10 +286,12 @@ mod tests {
     #[test]
     fn effective_whitelist_combines_defaults_and_custom() {
         let networking = Networking {
+            enabled: true,
             payload_size: None,
             quota: None,
             whitelist: vec!["proxy.example.com".to_string()],
             use_default_whitelist: true,
+            block_private: false,
         };
         assert_eq!(
             networking.effective_whitelist(),
@@ -248,6 +299,12 @@ mod tests {
                 "opencode.ai".to_string(),
                 "mcp.exa.ai".to_string(),
                 "api.exa.ai".to_string(),
+                "api.parallel.ai".to_string(),
+                "search.parallel.ai".to_string(),
+                "task-mcp.parallel.ai".to_string(),
+                "api.tavily.com".to_string(),
+                "api.search.brave.com".to_string(),
+                "google.serper.dev".to_string(),
                 "proxy.example.com".to_string(),
             ]
         );
@@ -256,10 +313,12 @@ mod tests {
     #[test]
     fn effective_whitelist_can_disable_defaults() {
         let networking = Networking {
+            enabled: true,
             payload_size: None,
             quota: None,
             whitelist: vec!["proxy.example.com".to_string()],
             use_default_whitelist: false,
+            block_private: false,
         };
         assert_eq!(
             networking.effective_whitelist(),

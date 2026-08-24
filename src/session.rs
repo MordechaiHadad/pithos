@@ -82,9 +82,7 @@ pub(crate) fn run_session(
         }
     }
     config.harness.mount(&mut command)?;
-    if let Some(networking) = &config.networking {
-        networking.apply_to(&mut command)?;
-    }
+    config.networking.apply_to(&mut command)?;
     if let Some(audio) = crate::audio::passthrough(config.audio) {
         tracing::debug!(volume = %audio.volume, "passing host audio through");
         command.args(["--volume", &audio.volume]);
