@@ -79,6 +79,7 @@ pub(crate) fn run_session(
         "--user",
         &current_user,
     ]);
+    command.args(["--volume", crate::agent::AGENT_HOME]);
     for (key, value) in &config.environment {
         command.args(["--env", &format!("{key}={value}")]);
     }
