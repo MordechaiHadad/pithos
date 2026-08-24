@@ -9,6 +9,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+const EGRESS_HOOK_SCRIPT: &str = include_str!("../host/hooks/pithos-egress-cap.sh");
+
 /// Creates a symlink at `link` pointing to `target`.
 ///
 /// On Windows, creating a symlink requires Developer Mode or elevated
@@ -174,10 +176,63 @@ pub(crate) fn is_executable(path: &Path) -> bool {
 /// Verifies the host (or podman machine) is ready for pithos networking:
 /// the OCI hook is registered, its script is executable, and nft is present.
 pub(crate) fn verify_networking_support() -> Result<()> {
+    install_networking_hook()?;
     verify_networking_support_impl()
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
+fn install_networking_hook() -> Result<()> {
+    let config_dir =
+        dirs::config_dir().ok_or_else(|| eyre::eyre!("cannot determine config directory"))?;
+    let data_dir = dirs::data_local_dir()
+        .ok_or_else(|| eyre::eyre!("cannot determine local data directory"))?;
+    let hooks_dir = config_dir.join("containers/oci/hooks.d");
+    let script_path = data_dir.join("pithos/pithos-egress-cap.sh");
+    fs::create_dir_all(&hooks_dir)?;
+    fs::create_dir_all(script_path.parent().expect("script path has a parent"))?;
+    fs::write(&script_path, EGRESS_HOOK_SCRIPT)?;
+    set_executable(&script_path)?;
+    fs::write(
+        hooks_dir.join("pithos-egress-cap.json"),
+        hook_config(&script_path),
+    )?;
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn set_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn install_networking_hook() -> Result<()> {
+    use eyre::WrapErr;
+    let script = shell_literal(EGRESS_HOOK_SCRIPT);
+    let install = format!(
+        "set -eu\nmkdir -p \"$HOME/.config/containers/oci/hooks.d\" \"$HOME/.local/share/pithos\"\nprintf '%s' {script} > \"$HOME/.local/share/pithos/pithos-egress-cap.sh\"\nchmod 755 \"$HOME/.local/share/pithos/pithos-egress-cap.sh\"\nprintf '%s\\n' '{{\n  \\\"version\\\": \\\"1.0.0\\\",\n  \\\"hook\\\": {{ \\\"path\\\": \\\"'$HOME'/.local/share/pithos/pithos-egress-cap.sh\\\", \\\"args\\\": [\\\"pithos-egress-cap.sh\\\"] }},\n  \\\"when\\\": {{ \\\"annotations\\\": {{ \\\"pithos.networking\\\": \\\"1\\\" }} }},\n  \\\"stages\\\": [\\\"createRuntime\\\"]\n}}' > \"$HOME/.config/containers/oci/hooks.d/pithos-egress-cap.json\"\n",
+    );
+    machine_ssh(&install)
+        .wrap_err("could not install the embedded networking hook in the podman machine")?;
+    Ok(())
+}
+
+fn hook_config(script_path: &Path) -> String {
+    format!(
+        "{{\n  \"version\": \"1.0.0\",\n  \"hook\": {{\n    \"path\": \"{}\",\n    \"args\": [\"pithos-egress-cap.sh\"]\n  }},\n  \"when\": {{\n    \"annotations\": {{\n      \"pithos.networking\": \"1\"\n    }}\n  }},\n  \"stages\": [\"createRuntime\"]\n}}\n",
+        script_path.display()
+    )
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn shell_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
 fn verify_networking_support_impl() -> Result<()> {
     let mut search = vec![
         PathBuf::from("/usr/share/containers/oci/hooks.d"),
@@ -216,8 +271,8 @@ fn verify_networking_support_impl() -> Result<()> {
             }
         }
         None => bail!(
-            "no OCI hook registered for pithos networking. Install \
-             host/oci-hooks.d/pithos-egress-cap.json and its hook script into one of: {}",
+            "no OCI hook registered for pithos networking after automatic installation; \
+             expected one of: {}",
             search
                 .iter()
                 .map(|dir| dir.display().to_string())
@@ -233,30 +288,9 @@ fn verify_networking_support_impl() -> Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn verify_networking_support_impl() -> Result<()> {
     use eyre::WrapErr;
-    use std::io::Write;
-
-    fn machine_ssh(script: &str) -> Result<std::process::Output> {
-        tracing::debug!(script, "running podman machine ssh");
-        let mut child = std::process::Command::new("podman")
-            .args(["machine", "ssh", "sh", "-s"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .wrap_err("could not run `podman machine ssh`; start the podman machine first")?;
-        child
-            .stdin
-            .take()
-            .expect("stdin is configured")
-            .write_all(script.as_bytes())
-            .wrap_err("could not send the probe script to the podman machine")?;
-        child
-            .wait_with_output()
-            .wrap_err("podman machine ssh failed")
-    }
 
     let probe = r#"set -eu
 dirs="/usr/share/containers/oci/hooks.d /etc/containers/oci/hooks.d $HOME/.config/containers/oci/hooks.d"
@@ -286,6 +320,29 @@ echo "$hook"
     let hook_path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     eprintln!("pithos networking hook: {hook_path}");
     Ok(())
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn machine_ssh(script: &str) -> Result<std::process::Output> {
+    use eyre::WrapErr;
+    use std::io::Write;
+    tracing::debug!(script, "running podman machine ssh");
+    let mut child = std::process::Command::new("podman")
+        .args(["machine", "ssh", "sh", "-s"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .wrap_err("could not run `podman machine ssh`; start the podman machine first")?;
+    child
+        .stdin
+        .take()
+        .expect("stdin is configured")
+        .write_all(script.as_bytes())
+        .wrap_err("could not send the probe script to the podman machine")?;
+    child
+        .wait_with_output()
+        .wrap_err("podman machine ssh failed")
 }
 
 #[cfg(unix)]
@@ -415,5 +472,16 @@ mod tests {
         )
         .unwrap();
         assert!(registered_hook(std::slice::from_ref(&dir.0)).is_none());
+    }
+
+    #[test]
+    fn generated_hook_config_matches_embedded_script_path() {
+        let config = hook_config(Path::new("/tmp/pithos-egress-cap.sh"));
+        let value: serde_json::Value = serde_json::from_str(&config).unwrap();
+        assert_eq!(
+            value["hook"]["path"],
+            serde_json::Value::String("/tmp/pithos-egress-cap.sh".into())
+        );
+        assert!(EGRESS_HOOK_SCRIPT.contains("pithos.networking-rules"));
     }
 }

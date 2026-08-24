@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
   "hook": {
-    "path": "/home/node/.config/containers/hooks/pithos-egress-cap.sh",
+    "path": "/usr/local/bin/pithos-egress-cap.sh",
     "args": ["pithos-egress-cap.sh"]
   },
   "when": {

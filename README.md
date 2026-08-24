@@ -14,26 +14,24 @@ from the container settings.
 - Podman
 - A Git repository to run a session in
 
-Network restrictions require nftables support on the host and the OCI hook
-included in `host/`.
+Network restrictions require nftables support and an OCI hook. Pithos embeds
+and installs its hook automatically when a session starts.
 
-On Windows, Pithos runs as a native binary and talks to a Linux podman machine
-(`podman machine init` + `podman machine start`). Everything the binary
-executes is routed through the podman machine or through the `platform`
-module, so no WSL is required on the host side.
+On macOS and Windows, Pithos runs as a native binary and talks to a Linux
+podman machine (`podman machine init` + `podman machine start`). Everything the
+binary executes is routed through the podman machine or through the `platform`
+module, so no Linux compatibility layer is required on the host side.
 
-## Windows setup
+## macOS and Windows setup
 
 1. Install Podman Desktop or the Podman CLI, then create and start a machine:
    ```sh
    podman machine init
    podman machine start
    ```
-2. Install the OCI hook and nftables inside the machine so egress caps work.
-   Copy `host/oci-hooks.d/pithos-egress-cap.json` and
-   `host/hooks/pithos-egress-cap.sh` into the machine under
-   `$HOME/.config/containers/oci/hooks.d/`, `chmod +x` the script, and install
-   nftables with the machine's package manager (`sudo apt install nftables`).
+2. Install nftables inside the machine so egress caps work
+   (`sudo apt install nftables`). Pithos installs its embedded OCI hook there
+   automatically.
 3. Build and run:
    ```sh
    pithos build
