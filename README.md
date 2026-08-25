@@ -155,7 +155,6 @@ The configuration file is TOML. A minimal configuration is:
 
 ```toml
 base_image = "node:22-bookworm-slim"
-image_tag = "localhost/pithos-opencode:latest"
 workspace = "/workspace"
 
 [harness]
@@ -174,7 +173,9 @@ verifies the session environment: agent-home ownership, writable state/cache
 mounts, and that every installed tool resolves for the runtime user.
 
 `image_tag` is the local Podman image tag. It defaults to
-`localhost/pithos-opencode:latest`.
+`localhost/pithos-<harness-name>:latest` (for example
+`localhost/pithos-claude-code:latest` for the claude-code harness), so each
+harness builds into its own image namespace. Set it explicitly to override.
 
 `workspace` is the absolute path used as the working directory inside the
 container. It defaults to `/workspace`.

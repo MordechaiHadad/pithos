@@ -8,7 +8,7 @@ use crate::config::{Config, Download, ToolchainDef, UvTool};
 use crate::sandbox::TempDir;
 
 impl Config {
-    #[tracing::instrument(skip(self), fields(image_tag = %self.image_tag))]
+    #[tracing::instrument(skip(self), fields(image_tag = %self.image_tag()))]
     pub(crate) fn build_image(&self) -> Result<()> {
         let context = TempDir::create("pithos-build")?;
         let config_digest = self.digest()?;
@@ -19,7 +19,7 @@ impl Config {
             .args([
                 "build",
                 "--tag",
-                &self.image_tag,
+                &self.image_tag(),
                 "--label",
                 &format!("pithos.config={config_digest}"),
                 "--file",
@@ -42,12 +42,12 @@ impl Config {
                 "inspect",
                 "--format",
                 "{{ index .Labels \"pithos.config\" }}",
-                &self.image_tag,
+                &self.image_tag(),
             ])
             .output()
             .wrap_err("could not inspect podman image")?;
         if !output.status.success() {
-            tracing::trace!(image_tag = %self.image_tag, "image not present yet");
+            tracing::trace!(image_tag = %self.image_tag(), "image not present yet");
             return Ok(false);
         }
         let stored = String::from_utf8_lossy(&output.stdout).trim().to_owned();
@@ -645,7 +645,7 @@ mod tests {
         config.with_toolchain(Some("lua".into()));
         let file = config.rendered();
         assert!(file.contains("mise use -g --yes 'lua'\n"));
-        assert_eq!(config.image_tag, "localhost/pithos-opencode:latest-lua");
+        assert_eq!(config.image_tag(), "localhost/pithos-opencode:latest-lua");
     }
 
     #[test]

@@ -12,8 +12,8 @@ pub(crate) struct Config {
     pub(crate) base_image: String,
     #[serde(default = "default_workspace")]
     pub(crate) workspace: String,
-    #[serde(default = "default_image_tag")]
-    pub(crate) image_tag: String,
+    #[serde(default)]
+    pub(crate) image_tag: Option<String>,
     #[serde(default = "default_install")]
     pub(crate) install: Vec<String>,
     #[serde(default)]
@@ -175,9 +175,6 @@ fn default_base_image() -> String {
 fn default_workspace() -> String {
     "/workspace".into()
 }
-fn default_image_tag() -> String {
-    "localhost/pithos-opencode:latest".into()
-}
 
 impl Config {
     pub(crate) fn init() -> Result<()> {
@@ -205,10 +202,20 @@ impl Config {
         Ok(config)
     }
 
+    /// Resolves the image tag: an explicit `image_tag` from the config wins,
+    /// otherwise the tag is derived from the harness name so each harness
+    /// builds into its own image namespace.
+    pub(crate) fn image_tag(&self) -> String {
+        match &self.image_tag {
+            Some(tag) => tag.clone(),
+            None => format!("localhost/pithos-{}:latest", self.harness.name()),
+        }
+    }
+
     pub(crate) fn with_toolchain(&mut self, toolchain: Option<String>) {
         if let Some(name) = toolchain {
             self.toolchains = vec![name.clone()];
-            self.image_tag = format!("{}-{}", self.image_tag, name);
+            self.image_tag = Some(format!("{}-{}", self.image_tag(), name));
         }
     }
 
@@ -281,6 +288,9 @@ impl Config {
         if self.workspace.is_empty() || !self.workspace.starts_with('/') {
             bail!("workspace must be an absolute container path")
         }
+        if self.image_tag.as_deref() == Some("") {
+            bail!("image_tag cannot be empty")
+        }
         let defs = self.merged_toolchains();
         for name in defs.keys() {
             if !valid_toolchain_name(name) {
@@ -322,7 +332,6 @@ impl Config {
 
 fn starter_config() -> String {
     r#"base_image = "node:22-bookworm-slim"
-image_tag = "localhost/pithos-opencode:latest"
 workspace = "/workspace"
 
 # Install tools from the mise registry (supports name@version and backend:name):
@@ -709,7 +718,10 @@ mod tests {
         .unwrap();
         config.with_toolchain(Some("golang".into()));
         assert_eq!(config.toolchains, ["golang"]);
-        assert_eq!(config.image_tag, "localhost/pithos-opencode:latest-golang");
+        assert_eq!(
+            config.image_tag(),
+            "localhost/pithos-opencode:latest-golang"
+        );
     }
 
     #[test]
@@ -725,7 +737,56 @@ mod tests {
         .unwrap();
         config.with_toolchain(None);
         assert_eq!(config.toolchains, ["python"]);
-        assert_eq!(config.image_tag, "localhost/pithos-opencode:latest");
+        assert_eq!(config.image_tag(), "localhost/pithos-opencode:latest");
+    }
+
+    #[test]
+    fn image_tag_derives_from_harness_name() {
+        let opencode = Config::parse("[harness]\nname = \"opencode\"");
+        assert_eq!(opencode.image_tag(), "localhost/pithos-opencode:latest");
+
+        let claude_code = Config::parse("[harness]\nname = \"claude-code\"");
+        assert_eq!(
+            claude_code.image_tag(),
+            "localhost/pithos-claude-code:latest"
+        );
+    }
+
+    #[test]
+    fn explicit_image_tag_overrides_harness_derivation() {
+        let config = Config::parse(
+            r#"
+            image_tag = "localhost/custom:v1"
+
+            [harness]
+            name = "claude-code"
+            "#,
+        );
+        assert_eq!(config.image_tag(), "localhost/custom:v1");
+    }
+
+    #[test]
+    fn toolchain_retag_applies_to_derived_image_tag() {
+        let mut config = Config::parse("[harness]\nname = \"claude-code\"");
+        config.with_toolchain(Some("python".into()));
+        assert_eq!(
+            config.image_tag(),
+            "localhost/pithos-claude-code:latest-python"
+        );
+    }
+
+    #[test]
+    fn empty_explicit_image_tag_fails_validation() {
+        let config = Config::try_parse(
+            r#"
+            image_tag = ""
+
+            [harness]
+            name = "opencode"
+            "#,
+        )
+        .unwrap();
+        assert!(config.validate().is_err());
     }
 
     #[test]

@@ -95,6 +95,13 @@ impl Harness {
         }
     }
 
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Opencode { .. } => "opencode",
+            Self::ClaudeCode { .. } => "claude-code",
+        }
+    }
+
     pub fn mount(&self, command: &mut Command, session_id: &str) -> eyre::Result<()> {
         match self {
             Self::Opencode { .. } => self.mount_opencode(command),
@@ -744,7 +751,7 @@ mod tests {
     }
 
     fn claude_config(toml_body: &str) -> Config {
-        toml::from_str(&toml_body).unwrap()
+        toml::from_str(toml_body).unwrap()
     }
 
     #[test]
@@ -792,7 +799,7 @@ mod tests {
         for churn in ["todos", "shell-snapshots", "statsig"] {
             let expected = tmpfs_spec(&format!("{AGENT_HOME}/.claude/{churn}"));
             assert!(
-                args.iter().any(|arg| *arg == expected),
+                args.contains(&expected),
                 "expected {expected} tmpfs, got {args:?}"
             );
         }

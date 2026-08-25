@@ -101,7 +101,7 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
     crate::networking::enforcement::spawn_check(&config.networking, record.container_name.clone());
     tracing::debug!(?command, "starting harness container");
     let status = command
-        .arg(&config.image_tag)
+        .arg(config.image_tag())
         .status()
         .wrap_err("could not execute podman run")?;
     tracing::debug!(%status, "harness container exited");
@@ -197,7 +197,7 @@ fn prepare_workspace(config: &Config, repository: &Path) -> Result<PreparedSessi
     let record = registry::SessionRecord::new(
         repository,
         sandbox.path(),
-        &config.image_tag,
+        &config.image_tag(),
         &config.workspace,
         &current_user,
         unmanaged_paths.clone(),
