@@ -14,6 +14,10 @@ pub(crate) struct SessionRecord {
     pub(crate) image_tag: String,
     pub(crate) workspace: String,
     pub(crate) user: String,
+    #[serde(default)]
+    pub(crate) unmanaged: Vec<String>,
+    #[serde(default)]
+    pub(crate) diff_viewer: Option<String>,
     pub(crate) pid: u32,
     pub(crate) started_at: u64,
 }
@@ -25,6 +29,8 @@ impl SessionRecord {
         image_tag: &str,
         workspace: &str,
         user: &str,
+        unmanaged: Vec<String>,
+        diff_viewer: Option<String>,
     ) -> Self {
         let repo_name = repository
             .file_name()
@@ -39,6 +45,8 @@ impl SessionRecord {
             image_tag: image_tag.to_string(),
             workspace: workspace.to_string(),
             user: user.to_string(),
+            unmanaged,
+            diff_viewer,
             pid: std::process::id(),
             started_at: unix_now(),
         }
@@ -236,6 +244,8 @@ mod tests {
             image_tag: "localhost/pithos-opencode:latest".to_string(),
             workspace: "/workspace".to_string(),
             user: "1000:1000".to_string(),
+            unmanaged: Vec::new(),
+            diff_viewer: None,
             pid: 42,
             started_at,
         }
@@ -255,6 +265,23 @@ mod tests {
         assert_eq!(sessions[1].container_name, "pithos-b-0002");
         assert_eq!(sessions[1].user, "1000:1000");
         assert_eq!(sessions[1].workspace, "/workspace");
+    }
+
+    #[test]
+    fn round_trip_preserves_pull_settings() {
+        let dir = TempDir::create("pithos-registry-pull-fields").unwrap();
+        let mut record = sample_record("pull-0001", 10);
+        record.unmanaged = vec!["target".to_string()];
+        record.diff_viewer = Some("difftool -dir {dir}".to_string());
+        save_in(&dir.0, &record).unwrap();
+
+        let sessions = list_in(&dir.0);
+
+        assert_eq!(sessions[0].unmanaged, vec!["target".to_string()]);
+        assert_eq!(
+            sessions[0].diff_viewer.as_deref(),
+            Some("difftool -dir {dir}")
+        );
     }
 
     #[test]
@@ -339,6 +366,8 @@ mod tests {
             "localhost/pithos-opencode:latest",
             "/workspace",
             "1000:1000",
+            vec!["target".to_string()],
+            Some("difftool -dir {dir}".to_string()),
         );
 
         assert!(record.id.starts_with("pithos-registry-new-"));

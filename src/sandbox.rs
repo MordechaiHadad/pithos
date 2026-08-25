@@ -122,7 +122,9 @@ fn matches_any(relative: &Path, patterns: &[String]) -> bool {
             .components()
             .map(|c| c.as_os_str())
             .collect();
-        components.windows(parts.len()).any(|window| window == parts.as_slice())
+        components
+            .windows(parts.len())
+            .any(|window| window == parts.as_slice())
     })
 }
 

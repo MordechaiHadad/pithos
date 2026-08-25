@@ -49,11 +49,11 @@ Create a starter configuration:
 
 ```sh
 pithos init
-pithos init --toolchain rust
-pithos init --toolchain python
 ```
 
 `init` creates `./pithos.toml` and does not overwrite an existing file.
+Toolchains are user-defined: uncomment and fill in a `[toolchain.NAME]`
+table (or add one to the global library) to install tools.
 
 Build the configured container image:
 
@@ -73,8 +73,8 @@ Use `--yes` to apply changes without asking for confirmation, or `--no` to
 discard changes without asking. These options cannot be used together.
 
 A toolchain can be selected on the command line instead of listing it in the
-configuration. It works as a global option or on the `build` and `run`
-subcommands:
+configuration. The flag is accepted by a bare invocation (which implies
+`run`) and by the `build` and `run` subcommands:
 
 ```sh
 pithos --toolchain rust
@@ -107,8 +107,40 @@ terminals. Pithos records each running session under
 - `pithos shell [id]` opens an interactive shell inside the running container.
 - `pithos exec [id] -- <command>` runs a single command inside the container.
 - `pithos path [id]` prints the host path of the live workspace.
+- `pithos pull [id]` applies the live workspace back to the host repository
+  without ending the session.
 
 The id is optional while exactly one session is running.
+
+### Pulling changes while a session runs
+
+`pithos pull` reuses the end-of-session review while the harness keeps
+running: it reports added, modified, and deleted files, shows a diff on
+request (`[v]iew`), and mirrors the workspace into the repository after
+confirmation. The sandbox is never modified, so pulls can repeat as the agent
+keeps working, and the normal review still runs when the session finishes.
+
+By default the pull targets the repository the session started from.
+`--path` redirects it to any existing directory; relative forms such as `.`
+or `..` resolve against your shell's working directory:
+
+```sh
+pithos pull myrepo-1a2b --path ../second-checkout
+```
+
+Pass `--dry-run` to preview without applying anything. Pass `--json` to emit
+a machine-readable report for editor plugins:
+
+```sh
+pithos pull myrepo-1a2b --dry-run --json
+pithos pull myrepo-1a2b --yes --json
+```
+
+The JSON object contains `session`, `target`, `applied`, and `changed`, where
+each entry has a `path` and a `kind` of `added`, `modified`, or `deleted`.
+When stdin is not a terminal, `pull` refuses to prompt and requires an
+explicit `--yes`, `--no`, or `--dry-run`. The `--yes` and `--no` flags are
+global, so they work before or after the subcommand.
 
 The container's workspace is a bind mount of a host directory, so any editor
 can open the path printed by `pithos path` and watch the agent's changes land

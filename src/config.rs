@@ -178,14 +178,14 @@ fn default_image_tag() -> String {
 }
 
 impl Config {
-    pub(crate) fn init(toolchain: Option<String>) -> Result<()> {
+    pub(crate) fn init() -> Result<()> {
         let path = Path::new("pithos.toml");
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(path)
             .wrap_err("cannot create pithos.toml")?;
-        let contents = starter_config(toolchain);
+        let contents = starter_config();
         std::io::Write::write_all(&mut file, contents.as_bytes())
             .wrap_err("cannot write pithos.toml")?;
         println!("created {}", path.display());
@@ -317,13 +317,31 @@ impl Config {
     }
 }
 
-fn starter_config(toolchain: Option<String>) -> String {
-    let toolchains = toolchain
-        .map(|name| format!("toolchains = [\"{name}\"]\n"))
-        .unwrap_or_default();
-    format!(
-        "base_image = \"node:22-bookworm-slim\"\nimage_tag = \"localhost/pithos-opencode:latest\"\nworkspace = \"/workspace\"\n\n{toolchains}\n# Install tools from the mise registry (supports name@version and backend:name):\n# mise = [\"neovim\", \"lua-language-server\"]\n# Define your own toolchains:\n# [toolchain.example]\n# install = [\"curl\"]\n# env = {{ PATH = \"/opt/example/bin:$PATH\" }}\n# run = [\"curl -fsSL https://example.com/install.sh | sh\"]\n# extra = [\"example --version\"]\n\n[harness]\nname = \"opencode\"\ncommand = [\"opencode\", \"/workspace\"]\n\n# Egress is capped by default (64 MiB per connection, 2 GiB per session,\n# private networks blocked). Override any knob:\n# [networking]\n# payload_size = 65536\n# quota = 2097152\n"
-    )
+fn starter_config() -> String {
+    r#"base_image = "node:22-bookworm-slim"
+image_tag = "localhost/pithos-opencode:latest"
+workspace = "/workspace"
+
+# Install tools from the mise registry (supports name@version and backend:name):
+# mise = ["neovim", "lua-language-server"]
+# Define your own toolchains:
+# [toolchain.example]
+# install = ["curl"]
+# env = { PATH = "/opt/example/bin:$PATH" }
+# run = ["curl -fsSL https://example.com/install.sh | sh"]
+# extra = ["example --version"]
+
+[harness]
+name = "opencode"
+command = ["opencode", "/workspace"]
+
+# Egress is capped by default (64 MiB per connection, 2 GiB per session,
+# private networks blocked). Override any knob:
+# [networking]
+# payload_size = 65536
+# quota = 2097152
+"#
+    .to_string()
 }
 
 fn valid_toolchain_name(name: &str) -> bool {
@@ -661,7 +679,7 @@ mod tests {
 
     #[test]
     fn starter_config_defaults_without_toolchain() {
-        let config: Config = toml::from_str(&starter_config(None)).unwrap();
+        let config: Config = toml::from_str(&starter_config()).unwrap();
         assert!(config.toolchains.is_empty());
         assert_eq!(
             config.harness.command(),
@@ -670,14 +688,8 @@ mod tests {
     }
 
     #[test]
-    fn starter_config_includes_selected_toolchain() {
-        let config: Config = toml::from_str(&starter_config(Some("python".into()))).unwrap();
-        assert_eq!(config.toolchains, ["python"]);
-    }
-
-    #[test]
     fn starter_config_parses_with_commented_example() {
-        let config: Config = toml::from_str(&starter_config(None)).unwrap();
+        let config: Config = toml::from_str(&starter_config()).unwrap();
         assert!(config.toolchains.is_empty());
     }
 
