@@ -1,4 +1,4 @@
-use eyre::{Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use std::env;
 use std::path::Path;
 use std::process::Command;
@@ -36,30 +36,13 @@ pub(crate) fn run(
 
 #[tracing::instrument(skip_all, fields(repository = %repository.display()))]
 fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool) -> Result<()> {
-    let up_to_date = config.image_up_to_date()?;
-    tracing::debug!(up_to_date, "image freshness check");
-    if !up_to_date {
-        config.build_image()?;
-    }
-    let sandbox = TempDir::create("pithos-workspace")?;
-    copy_tree(repository, sandbox.path(), &config.ignore)?;
-    strip_remotes(sandbox.path())?;
-    let current_user = format!(
-        "{}:{}",
-        crate::platform::current_uid(),
-        crate::platform::current_gid()
-    );
-    let unmanaged_paths = session::unmanaged(config);
-    let record = registry::SessionRecord::new(
-        repository,
-        sandbox.path(),
-        &config.image_tag,
-        &config.workspace,
-        &current_user,
-        unmanaged_paths.clone(),
-        config.diff_viewer.clone(),
-    );
-    record.save()?;
+    let prepared = prepare_session(config, repository)?;
+    let PreparedSession {
+        sandbox,
+        record,
+        current_user,
+        unmanaged_paths,
+    } = prepared;
     println!(
         "pithos session {}: inspect it live with `pithos shell {}` or open {} in your editor",
         record.id,
@@ -73,6 +56,7 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
         "--interactive",
         "--tty",
         "--read-only",
+        "--pull=never",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         "--userns=keep-id",
@@ -160,6 +144,72 @@ fn strip_remotes(repository: &Path) -> Result<()> {
             .wrap_err_with(|| format!("could not remove remote {name}"))?;
     }
     Ok(())
+}
+
+/// Sandbox, session record, and runtime identity needed to start a container.
+struct PreparedSession {
+    sandbox: TempDir,
+    record: registry::SessionRecord,
+    current_user: String,
+    unmanaged_paths: Vec<String>,
+}
+
+/// Prepares the sandbox while the image freshness check or build runs on a
+/// parallel thread. The two steps touch disjoint state, so the workspace copy
+/// hides inside the image preparation window and both must succeed before a
+/// container starts.
+fn prepare_session(config: &Config, repository: &Path) -> Result<PreparedSession> {
+    std::thread::scope(|scope| {
+        let builder = scope.spawn(|| -> Result<()> {
+            let up_to_date = config.image_up_to_date()?;
+            tracing::debug!(up_to_date, "image freshness check");
+            if !up_to_date {
+                config.build_image()?;
+            }
+            Ok(())
+        });
+        let prepared = prepare_workspace(config, repository);
+        match prepared {
+            Ok(pair) => {
+                builder
+                    .join()
+                    .map_err(|_| eyre!("image preparation thread panicked"))??;
+                Ok(pair)
+            }
+            Err(prepare_error) => {
+                let _ = builder.join();
+                Err(prepare_error)
+            }
+        }
+    })
+}
+
+fn prepare_workspace(config: &Config, repository: &Path) -> Result<PreparedSession> {
+    let sandbox = TempDir::create("pithos-workspace")?;
+    copy_tree(repository, sandbox.path(), &config.ignore)?;
+    strip_remotes(sandbox.path())?;
+    let current_user = format!(
+        "{}:{}",
+        crate::platform::current_uid(),
+        crate::platform::current_gid()
+    );
+    let unmanaged_paths = session::unmanaged(config);
+    let record = registry::SessionRecord::new(
+        repository,
+        sandbox.path(),
+        &config.image_tag,
+        &config.workspace,
+        &current_user,
+        unmanaged_paths.clone(),
+        config.diff_viewer.clone(),
+    );
+    record.save()?;
+    Ok(PreparedSession {
+        sandbox,
+        record,
+        current_user,
+        unmanaged_paths,
+    })
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 use eyre::{Result, eyre};
+use rayon::prelude::*;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -97,6 +98,8 @@ fn copy_tree_at(
     ignore: &[String],
 ) -> Result<()> {
     fs::create_dir_all(destination)?;
+    let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut subdirectories: Vec<(PathBuf, PathBuf, PathBuf)> = Vec::new();
     for entry in fs::read_dir(source)? {
         let entry = entry?;
         let child_relative = relative.join(entry.file_name());
@@ -106,12 +109,20 @@ fn copy_tree_at(
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
         if fs::symlink_metadata(&source_path)?.file_type().is_dir() {
-            copy_tree_at(&source_path, &destination_path, &child_relative, ignore)?;
+            subdirectories.push((source_path, destination_path, child_relative));
         } else {
-            copy_entry(&source_path, &destination_path)?;
+            files.push((source_path, destination_path));
         }
     }
-    Ok(())
+    let file_result = files
+        .par_iter()
+        .try_for_each(|(source_path, destination_path)| copy_entry(source_path, destination_path));
+    let directory_result = subdirectories.par_iter().try_for_each(
+        |(source_path, destination_path, child_relative)| {
+            copy_tree_at(source_path, destination_path, child_relative, ignore)
+        },
+    );
+    file_result.and(directory_result)
 }
 
 fn copy_entry(source: &Path, destination: &Path) -> Result<()> {
@@ -148,8 +159,8 @@ pub(crate) fn has_changes(
     unmanaged: &[String],
 ) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
-    collect_paths(source, Path::new(""), &mut paths)?;
-    collect_paths(sandbox, Path::new(""), &mut paths)?;
+    collect_paths(source, Path::new(""), unmanaged, &mut paths)?;
+    collect_paths(sandbox, Path::new(""), unmanaged, &mut paths)?;
     paths.sort();
     paths.dedup();
     let mut changed = Vec::new();
@@ -183,13 +194,21 @@ fn matches_any(relative: &Path, patterns: &[String]) -> bool {
     })
 }
 
-fn collect_paths(root: &Path, relative: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
+fn collect_paths(
+    root: &Path,
+    relative: &Path,
+    excluded: &[String],
+    paths: &mut Vec<PathBuf>,
+) -> Result<()> {
     for entry in fs::read_dir(root.join(relative))? {
         let entry = entry?;
         let child = relative.join(entry.file_name());
+        if is_excluded(&child, excluded) {
+            continue;
+        }
         paths.push(child.clone());
         if entry.file_type()?.is_dir() {
-            collect_paths(root, &child, paths)?;
+            collect_paths(root, &child, excluded, paths)?;
         }
     }
     Ok(())

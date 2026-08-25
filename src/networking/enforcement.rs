@@ -77,20 +77,43 @@ fn check(container_name: String) {
 }
 
 /// Blocks until the container reports `running`, then returns its pid.
+/// Each poll is a single podman invocation so startup is not slowed by the
+/// background checker competing for the podman socket.
 fn wait_for_pid(container_name: &str) -> Option<String> {
     let deadline = std::time::Instant::now() + STARTUP_TIMEOUT;
     loop {
-        if let Some(pid) = running_pid(container_name) {
-            return Some(pid);
-        }
-        if !container_exists(container_name) {
-            return None;
+        match poll_state(container_name) {
+            Poll::Running(pid) => return Some(pid),
+            Poll::Missing => {
+                tracing::debug!("container vanished or did not start; skipping enforcement check");
+                return None;
+            }
+            Poll::Waiting => {}
         }
         if std::time::Instant::now() >= deadline {
             tracing::debug!("container did not start before the enforcement check timed out");
             return None;
         }
         thread::sleep(POLL_INTERVAL);
+    }
+}
+
+enum Poll {
+    Running(String),
+    Waiting,
+    Missing,
+}
+
+fn poll_state(container_name: &str) -> Poll {
+    match inspect_state(container_name, "{{.State.Status}} {{.State.Pid}}") {
+        Some(state) => {
+            let mut fields = state.split_whitespace();
+            match (fields.next(), fields.next()) {
+                (Some("running"), Some(pid)) if pid != "0" => Poll::Running(pid.to_string()),
+                _ => Poll::Waiting,
+            }
+        }
+        None => Poll::Missing,
     }
 }
 
@@ -104,20 +127,6 @@ fn inspect_state(container_name: &str, format: &str) -> Option<String> {
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!value.is_empty()).then_some(value)
-}
-
-fn running_pid(container_name: &str) -> Option<String> {
-    match inspect_state(container_name, "{{.State.Status}}")?.as_str() {
-        "running" => {
-            let pid = inspect_state(container_name, "{{.State.Pid}}")?;
-            (pid != "0").then_some(pid)
-        }
-        _ => None,
-    }
-}
-
-fn container_exists(container_name: &str) -> bool {
-    inspect_state(container_name, "{{.State.Status}}").is_some()
 }
 
 fn verdict(pid: &str) -> Verdict {

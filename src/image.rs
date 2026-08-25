@@ -133,6 +133,7 @@ impl Config {
         for download in &self.downloads {
             output.push_str(&format!("RUN {}\n", download.command()));
         }
+        output.push_str(&agent_home_cleanup());
         output.push_str(&agent_epilogue());
         output.push_str("RUN chmod -R a+rwX /tmp\n");
         output.push_str("CMD ");
@@ -212,6 +213,24 @@ fn agent_epilogue() -> String {
     let uid = crate::platform::current_uid();
     let gid = crate::platform::current_gid();
     format!("RUN chown -R {uid}:{gid} {}\n", shell_quote(AGENT_HOME))
+}
+
+/// Removes package-manager caches from the agent home before it is chowned.
+///
+/// Build steps run with HOME set to the agent home, so cargo, npm, and uv
+/// leave their download and registry caches there. The runtime mounts the
+/// agent home as an anonymous volume that podman seeds from the image on
+/// every session start, so anything left here would be copied again each
+/// boot. Tool binaries live outside the home (/usr/local, mise data dir),
+/// and the uv tool environments under `.local/share` are intentionally kept.
+fn agent_home_cleanup() -> String {
+    let caches = [".cargo", ".npm", ".cache", ".rustup"];
+    let paths = caches
+        .iter()
+        .map(|cache| shell_quote(&format!("{AGENT_HOME}/{cache}")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("RUN rm -rf {paths}\n")
 }
 
 fn uv_install_lines(tool: &UvTool) -> String {
@@ -397,6 +416,23 @@ mod tests {
             .find(&format!("RUN chown -R {uid}:{gid} '/home/agent'\n"))
             .unwrap();
         assert!(chown < file.find("CMD ").unwrap());
+    }
+
+    #[test]
+    fn package_manager_caches_are_removed_before_the_home_is_chowned() {
+        let file = Config::with_uv().rendered();
+        assert!(file.contains(
+            "RUN rm -rf '/home/agent/.cargo' '/home/agent/.npm' '/home/agent/.cache' '/home/agent/.rustup'\n"
+        ));
+        let last_install = file.find("RUN uv tool install 'plain-tool'\n").unwrap();
+        let cleanup = file.find("RUN rm -rf '/home/agent/.cargo'").unwrap();
+        let uid = crate::platform::current_uid();
+        let gid = crate::platform::current_gid();
+        let chown = file
+            .find(&format!("RUN chown -R {uid}:{gid} '/home/agent'\n"))
+            .unwrap();
+        assert!(last_install < cleanup && cleanup < chown);
+        assert!(!file.contains("/home/agent/.local"));
     }
 
     #[test]
