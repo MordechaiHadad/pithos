@@ -2,6 +2,7 @@ use eyre::{Result, WrapErr, eyre};
 use std::env;
 use std::path::Path;
 use std::process::Command;
+use std::time::Instant;
 
 use crate::config::Config;
 use crate::registry;
@@ -29,8 +30,18 @@ pub(crate) fn run(
     if !repository.join(".git").exists() {
         eyre::bail!("current directory is not a git repository")
     }
+    let load_started = Instant::now();
     let config = Config::load(config_path, toolchain)?;
+    tracing::debug!(
+        elapsed_ms = load_started.elapsed().as_millis() as u64,
+        "configuration loaded"
+    );
+    let sweep_started = Instant::now();
     sweep_orphans(&registry::sandbox_paths())?;
+    tracing::debug!(
+        elapsed_ms = sweep_started.elapsed().as_millis() as u64,
+        "orphan sweep finished"
+    );
     run_session(&config, &repository, auto_yes, auto_no)
 }
 
@@ -100,10 +111,17 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
     }
     crate::networking::enforcement::spawn_check(&config.networking, record.container_name.clone());
     tracing::debug!(?command, "starting harness container");
-    let status = command
+    let launch_started = Instant::now();
+    let mut child = command
         .arg(config.image_tag())
-        .status()
+        .spawn()
         .wrap_err("could not execute podman run")?;
+    tracing::debug!(
+        pid = child.id(),
+        elapsed_ms = launch_started.elapsed().as_millis() as u64,
+        "harness container handed off to podman"
+    );
+    let status = child.wait().wrap_err("could not wait for podman run")?;
     tracing::debug!(%status, "harness container exited");
     registry::remove(&record.id);
     let changed = has_changes(repository, sandbox.path(), &unmanaged_paths)?;
@@ -159,12 +177,22 @@ struct PreparedSession {
 /// hides inside the image preparation window and both must succeed before a
 /// container starts.
 fn prepare_session(config: &Config, repository: &Path) -> Result<PreparedSession> {
+    let started = Instant::now();
     std::thread::scope(|scope| {
         let builder = scope.spawn(|| -> Result<()> {
+            let image_started = Instant::now();
             let up_to_date = config.image_up_to_date()?;
-            tracing::debug!(up_to_date, "image freshness check");
+            tracing::debug!(
+                up_to_date,
+                elapsed_ms = image_started.elapsed().as_millis() as u64,
+                "image freshness checked"
+            );
             if !up_to_date {
                 config.build_image()?;
+                tracing::debug!(
+                    elapsed_ms = image_started.elapsed().as_millis() as u64,
+                    "image build finished"
+                );
             }
             Ok(())
         });
@@ -174,6 +202,10 @@ fn prepare_session(config: &Config, repository: &Path) -> Result<PreparedSession
                 builder
                     .join()
                     .map_err(|_| eyre!("image preparation thread panicked"))??;
+                tracing::debug!(
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "session prepared"
+                );
                 Ok(pair)
             }
             Err(prepare_error) => {
@@ -184,10 +216,16 @@ fn prepare_session(config: &Config, repository: &Path) -> Result<PreparedSession
     })
 }
 
+#[tracing::instrument(skip_all, fields(repository = %repository.display()))]
 fn prepare_workspace(config: &Config, repository: &Path) -> Result<PreparedSession> {
     let sandbox = TempDir::create("pithos-workspace")?;
     copy_tree(repository, sandbox.path(), &config.ignore)?;
+    let strip_started = Instant::now();
     strip_remotes(sandbox.path())?;
+    tracing::debug!(
+        elapsed_ms = strip_started.elapsed().as_millis() as u64,
+        "remotes stripped"
+    );
     let current_user = format!(
         "{}:{}",
         crate::platform::current_uid(),
@@ -203,7 +241,12 @@ fn prepare_workspace(config: &Config, repository: &Path) -> Result<PreparedSessi
         unmanaged_paths.clone(),
         config.diff_viewer.clone(),
     );
+    let save_started = Instant::now();
     record.save()?;
+    tracing::debug!(
+        elapsed_ms = save_started.elapsed().as_millis() as u64,
+        "session record saved"
+    );
     Ok(PreparedSession {
         sandbox,
         record,

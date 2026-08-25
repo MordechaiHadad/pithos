@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tempfile::Builder;
 
 const ORPHAN_MIN_AGE: Duration = Duration::from_secs(60 * 60);
@@ -87,8 +87,58 @@ fn temporary_base() -> Result<PathBuf> {
     Ok(base)
 }
 
+/// Aggregate outcome of a tree copy, reported at debug level for profiling.
+#[derive(Debug, Default)]
+struct CopyStats {
+    files: u64,
+    cloned: u64,
+    symlinks: u64,
+    directories: u64,
+    bytes: u64,
+}
+
+impl CopyStats {
+    fn record_entry(&mut self, entry: CopiedEntry) {
+        match entry {
+            CopiedEntry::File { bytes, reflinked } => {
+                self.files += 1;
+                self.bytes += bytes;
+                if reflinked {
+                    self.cloned += 1;
+                }
+            }
+            CopiedEntry::Symlink => self.symlinks += 1,
+        }
+    }
+
+    fn merge(&mut self, other: CopyStats) {
+        self.files += other.files;
+        self.cloned += other.cloned;
+        self.symlinks += other.symlinks;
+        self.directories += other.directories;
+        self.bytes += other.bytes;
+    }
+}
+
+/// What [`copy_entry`] materialized for a single non-directory entry.
+enum CopiedEntry {
+    File { bytes: u64, reflinked: bool },
+    Symlink,
+}
+
 pub(crate) fn copy_tree(source: &Path, destination: &Path, ignore: &[String]) -> Result<()> {
-    copy_tree_at(source, destination, Path::new(""), ignore)
+    let started = Instant::now();
+    let stats = copy_tree_at(source, destination, Path::new(""), ignore)?;
+    tracing::debug!(
+        files = stats.files,
+        cloned = stats.cloned,
+        symlinks = stats.symlinks,
+        directories = stats.directories,
+        bytes = stats.bytes,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "tree copy finished"
+    );
+    Ok(())
 }
 
 fn copy_tree_at(
@@ -96,8 +146,12 @@ fn copy_tree_at(
     destination: &Path,
     relative: &Path,
     ignore: &[String],
-) -> Result<()> {
+) -> Result<CopyStats> {
     fs::create_dir_all(destination)?;
+    let mut stats = CopyStats {
+        directories: 1,
+        ..CopyStats::default()
+    };
     let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut subdirectories: Vec<(PathBuf, PathBuf, PathBuf)> = Vec::new();
     for entry in fs::read_dir(source)? {
@@ -114,43 +168,73 @@ fn copy_tree_at(
             files.push((source_path, destination_path));
         }
     }
-    let file_result = files
+    let file_entries = files
         .par_iter()
-        .try_for_each(|(source_path, destination_path)| copy_entry(source_path, destination_path));
-    let directory_result = subdirectories.par_iter().try_for_each(
-        |(source_path, destination_path, child_relative)| {
+        .map(|(source_path, destination_path)| copy_entry(source_path, destination_path))
+        .collect::<Result<Vec<Option<CopiedEntry>>>>()?;
+    for entry in file_entries.into_iter().flatten() {
+        stats.record_entry(entry);
+    }
+    let subtree_stats = subdirectories
+        .par_iter()
+        .map(|(source_path, destination_path, child_relative)| {
             copy_tree_at(source_path, destination_path, child_relative, ignore)
-        },
-    );
-    file_result.and(directory_result)
+        })
+        .collect::<Result<Vec<CopyStats>>>()?;
+    for subtree in subtree_stats {
+        stats.merge(subtree);
+    }
+    Ok(stats)
 }
 
-fn copy_entry(source: &Path, destination: &Path) -> Result<()> {
+fn copy_entry(source: &Path, destination: &Path) -> Result<Option<CopiedEntry>> {
     tracing::trace!(source = %source.display(), destination = %destination.display(), "copying entry");
-    let file_type = fs::symlink_metadata(source)?.file_type();
+    let metadata = fs::symlink_metadata(source)?;
+    let file_type = metadata.file_type();
     if file_type.is_symlink() {
         let target = fs::read_link(source)?;
         crate::platform::symlink(&target, destination)?;
+        Ok(Some(CopiedEntry::Symlink))
     } else if file_type.is_file() {
-        atomic_copy(source, destination)?;
+        let bytes = metadata.len();
+        let reflinked = atomic_copy(source, destination)?;
+        Ok(Some(CopiedEntry::File { bytes, reflinked }))
     } else {
         eprintln!("warning: skipping special file {}", source.display());
+        Ok(None)
     }
-    Ok(())
 }
 
-fn atomic_copy(source: &Path, destination: &Path) -> Result<()> {
+/// Copies `source` to `destination` through a temporary file so readers never
+/// observe partial content. Returns whether the copy was served by a
+/// filesystem-level clone; unsupported filesystems silently fall back to a
+/// byte copy.
+fn atomic_copy(source: &Path, destination: &Path) -> Result<bool> {
     let file_name = destination
         .file_name()
         .unwrap_or_default()
         .to_string_lossy();
     let temp = destination.with_file_name(format!(".{file_name}.pithos-tmp"));
-    fs::copy(source, &temp)?;
+    let _ = fs::remove_file(&temp);
+    let reflinked = match reflink_copy::reflink_or_copy(source, &temp) {
+        Ok(None) => true,
+        Ok(Some(_)) => false,
+        Err(error) => {
+            tracing::debug!(
+                source = %source.display(),
+                %error,
+                "clone attempt failed; falling back to byte copy"
+            );
+            fs::copy(source, &temp)?;
+            false
+        }
+    };
+    fs::set_permissions(&temp, fs::metadata(source)?.permissions())?;
     if let Err(error) = fs::rename(&temp, destination) {
         let _ = fs::remove_file(&temp);
         return Err(error.into());
     }
-    Ok(())
+    Ok(reflinked)
 }
 
 pub(crate) fn has_changes(
@@ -275,7 +359,7 @@ fn apply_tree_at(
             fs::create_dir_all(&destination_path)?;
             apply_tree_at(&source_path, &destination_path, &child_relative, unmanaged)?;
         } else {
-            copy_entry(&source_path, &destination_path)?;
+            let _ = copy_entry(&source_path, &destination_path)?;
         }
     }
     Ok(())
@@ -360,6 +444,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn atomic_copy_isolates_writes_from_source() {
+        let dir = test_temp_dir("pithos-test-atomic-isolation");
+        let source = dir.path().join("source.bin");
+        let destination = dir.path().join("destination.bin");
+        fs::write(&source, b"original").unwrap();
+
+        let _reflinked = atomic_copy(&source, &destination).unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"original");
+        fs::write(&destination, b"mutated").unwrap();
+        assert_eq!(fs::read(&source).unwrap(), b"original");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_copy_propagates_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = test_temp_dir("pithos-test-atomic-permissions");
+        let source = dir.path().join("source.bin");
+        let destination = dir.path().join("destination.bin");
+        fs::write(&source, b"data").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
+
+        atomic_copy(&source, &destination).unwrap();
+
+        let mode = fs::metadata(&destination).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

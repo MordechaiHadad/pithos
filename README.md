@@ -14,6 +14,9 @@ from the container settings.
 - Podman
 - A Git repository to run a session in
 
+Workspace copies use filesystem copy-on-write clones where available (btrfs,
+XFS, ZFS, APFS, ReFS); other filesystems silently fall back to regular copies.
+
 Network restrictions require nftables support and an OCI hook. Pithos embeds
 and installs its hook automatically when a session starts.
 
@@ -289,11 +292,10 @@ Only use download URLs that you trust.
 `mise` is a list of tools installed through [mise](https://mise.jdx.dev). Each
 entry uses the spec forms mise accepts: a registry shorthand with an optional
 version (`neovim`, `node@22`) or a full backend name
-(`aqua:LuaLS/lua-language-server`, `npm:pyright`, `cargo:just`). Tools are
-registered with `mise use -g --yes` and their shims are placed on the
-container's `PATH`, so they resolve both during the image build and inside
-sessions. Prefer this key for tools covered by the mise registry and use
-`downloads` for raw installer scripts that mise cannot express. Legacy
+(`aqua:LuaLS/lua-language-server`, `npm:pyright`, `cargo:just`). Shims are
+placed on the container's `PATH`, so tools resolve during the image build and
+inside sessions. Prefer this key for tools covered by the mise registry and
+use `downloads` for raw installer scripts that mise cannot express. Legacy
 plugin-based backends need `git`, which this key does not install implicitly.
 
 ```toml
@@ -492,6 +494,13 @@ access to host audio output and potentially microphone input.
 Run formatting and tests with:
 
 ```sh
-cargo fmt --check
-cargo test
+just fmt-check
+just test
 ```
+
+Common tasks live in a [justfile](https://github.com/casey/just); `just` alone
+lists them, including `just run` for a session with phase timings and
+`just flamegraph` for CPU profiling. Profiling needs
+[cargo-flamegraph](https://github.com/flamegraph-rs/flamegraph) plus `perf`
+(relax with `sudo sysctl kernel.perf_event_paranoid=1`) or `dtrace` on macOS;
+set `RAYON_NUM_THREADS=1` for cleaner stacks.

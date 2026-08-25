@@ -104,9 +104,9 @@ impl Config {
         let mut mise_tools = self.mise.clone();
         mise_tools.extend(providers);
         if !mise_tools.is_empty() || wanted.iter().any(|name| !defs[name].mise.is_empty()) {
-            output.push_str(
-                "ENV MISE_DATA_DIR=/usr/local/share/mise PATH=/usr/local/share/mise/shims:$PATH\n",
-            );
+            output.push_str(&format!(
+                "ENV PATH={AGENT_HOME}/.local/share/mise/shims:$PATH\n"
+            ));
         }
         if !self.uv.is_empty() || wanted.iter().any(|name| !defs[name].uv.is_empty()) {
             output.push_str("ENV UV_TOOL_BIN_DIR=/usr/local/bin\n");
@@ -218,11 +218,12 @@ fn agent_epilogue() -> String {
 /// Removes package-manager caches from the agent home before it is chowned.
 ///
 /// Build steps run with HOME set to the agent home, so cargo, npm, and uv
-/// leave their download and registry caches there. The runtime mounts the
+/// leave their download and registry caches there, and mise keeps its
+/// installs and shims under `.local/share/mise`. The runtime mounts the
 /// agent home as an anonymous volume that podman seeds from the image on
-/// every session start, so anything left here would be copied again each
-/// boot. Tool binaries live outside the home (/usr/local, mise data dir),
-/// and the uv tool environments under `.local/share` are intentionally kept.
+/// every session start, so caches left here would be copied again each boot.
+/// Tool binaries under `.local/share/mise` and uv tool environments under
+/// `.local/share` are intentionally kept.
 fn agent_home_cleanup() -> String {
     let caches = [".cargo", ".npm", ".cache", ".rustup"];
     let paths = caches
@@ -392,9 +393,7 @@ mod tests {
             .find("RUN cargo install --root /usr/local 'just'\n")
             .unwrap();
         assert!(mise < rust && rust < install);
-        assert!(file.contains(
-            "ENV MISE_DATA_DIR=/usr/local/share/mise PATH=/usr/local/share/mise/shims:$PATH\n"
-        ));
+        assert!(file.contains("ENV PATH=/home/agent/.local/share/mise/shims:$PATH\n"));
         assert!(file.contains("apt-get install -y --no-install-recommends 'git' 'gcc'"));
     }
 
@@ -432,7 +431,7 @@ mod tests {
             .find(&format!("RUN chown -R {uid}:{gid} '/home/agent'\n"))
             .unwrap();
         assert!(last_install < cleanup && cleanup < chown);
-        assert!(!file.contains("/home/agent/.local"));
+        assert!(file.contains("ENV PATH=/home/agent/.local/share/mise/shims:$PATH"));
     }
 
     #[test]
@@ -500,9 +499,7 @@ mod tests {
         )
         .unwrap();
         let file = config.rendered();
-        assert!(file.contains(
-            "ENV MISE_DATA_DIR=/usr/local/share/mise PATH=/usr/local/share/mise/shims:$PATH"
-        ));
+        assert!(file.contains("ENV PATH=/home/agent/.local/share/mise/shims:$PATH"));
         assert!(file.contains("(command -v mise >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/* && curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh)) && mise use -g --yes 'neovim' 'lua-language-server'\n"));
     }
 
@@ -697,9 +694,7 @@ mod tests {
         .unwrap();
         let file = config.rendered();
         assert!(file.contains("mise use -g --yes 'python' 'uv'\n"));
-        assert!(file.contains(
-            "ENV MISE_DATA_DIR=/usr/local/share/mise PATH=/usr/local/share/mise/shims:$PATH"
-        ));
+        assert!(file.contains("ENV PATH=/home/agent/.local/share/mise/shims:$PATH"));
         assert!(
             file.contains("RUN uv tool install 'serena-agent' --python '3.13'\nRUN serena init")
         );
