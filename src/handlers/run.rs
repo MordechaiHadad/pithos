@@ -5,7 +5,7 @@ use std::process::Command;
 
 use crate::config::Config;
 use crate::registry;
-use crate::sandbox::{TempDir, apply_tree, copy_tree, has_changes};
+use crate::sandbox::{TempDir, apply_tree, copy_tree, has_changes, sweep_orphans};
 use crate::session;
 use crate::session::git;
 
@@ -30,6 +30,7 @@ pub(crate) fn run(
         eyre::bail!("current directory is not a git repository")
     }
     let config = Config::load(config_path, toolchain)?;
+    sweep_orphans(&registry::sandbox_paths())?;
     run_session(&config, &repository, auto_yes, auto_no)
 }
 
@@ -41,8 +42,8 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
         config.build_image()?;
     }
     let sandbox = TempDir::create("pithos-workspace")?;
-    copy_tree(repository, &sandbox.0, &config.ignore)?;
-    strip_remotes(&sandbox.0)?;
+    copy_tree(repository, sandbox.path(), &config.ignore)?;
+    strip_remotes(sandbox.path())?;
     let current_user = format!(
         "{}:{}",
         crate::platform::current_uid(),
@@ -51,7 +52,7 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
     let unmanaged_paths = session::unmanaged(config);
     let record = registry::SessionRecord::new(
         repository,
-        &sandbox.0,
+        sandbox.path(),
         &config.image_tag,
         &config.workspace,
         &current_user,
@@ -63,7 +64,7 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
         "pithos session {}: inspect it live with `pithos shell {}` or open {} in your editor",
         record.id,
         record.id,
-        sandbox.0.display()
+        sandbox.path().display()
     );
     let mut command = Command::new("podman");
     command.args(run_arg_prefix());
@@ -80,7 +81,7 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
     ]);
     command.args([
         "--volume",
-        &format!("{}:{}:rw,Z", sandbox.0.display(), config.workspace),
+        &format!("{}:{}:rw,Z", sandbox.path().display(), config.workspace),
     ]);
     command.args(["--workdir", &config.workspace]);
     command.args([
@@ -121,19 +122,19 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
         .wrap_err("could not execute podman run")?;
     tracing::debug!(%status, "harness container exited");
     registry::remove(&record.id);
-    let changed = has_changes(repository, &sandbox.0, &unmanaged_paths)?;
+    let changed = has_changes(repository, sandbox.path(), &unmanaged_paths)?;
     tracing::trace!(changed = changed.len(), "change detection finished");
     let apply = if auto_yes {
         true
     } else if auto_no || changed.is_empty() {
         false
     } else {
-        session::summarize(&changed, repository, &sandbox.0);
+        session::summarize(&changed, repository, sandbox.path());
         let mut session_view = None;
         session::review(
             &changed,
             repository,
-            &sandbox.0,
+            sandbox.path(),
             config.diff_viewer.as_deref(),
             &unmanaged_paths,
             &mut session_view,
@@ -141,7 +142,7 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
     };
     tracing::debug!(apply, "review decision");
     if apply {
-        apply_tree(&sandbox.0, repository, &unmanaged_paths)?;
+        apply_tree(sandbox.path(), repository, &unmanaged_paths)?;
     }
     if !status.success() {
         eyre::bail!("harness exited with {status}")
@@ -185,14 +186,14 @@ mod tests {
     #[test]
     fn strip_remotes_removes_all_remotes() {
         let repo = TempDir::create("pithos-test-remotes").unwrap();
-        git_ok(&repo.0, &["init"]).unwrap();
+        git_ok(repo.path(), &["init"]).unwrap();
         git_ok(
-            &repo.0,
+            repo.path(),
             &["remote", "add", "origin", "https://example.com/repo.git"],
         )
         .unwrap();
         git_ok(
-            &repo.0,
+            repo.path(),
             &[
                 "remote",
                 "add",
@@ -202,17 +203,17 @@ mod tests {
         )
         .unwrap();
 
-        strip_remotes(&repo.0).unwrap();
+        strip_remotes(repo.path()).unwrap();
 
-        let output = git(&repo.0, &["remote"]).unwrap();
+        let output = git(repo.path(), &["remote"]).unwrap();
         assert!(String::from_utf8_lossy(&output.stdout).trim().is_empty());
     }
 
     #[test]
     fn strip_remotes_noop_without_remotes() {
         let repo = TempDir::create("pithos-test-no-remotes").unwrap();
-        git_ok(&repo.0, &["init"]).unwrap();
+        git_ok(repo.path(), &["init"]).unwrap();
 
-        strip_remotes(&repo.0).unwrap();
+        strip_remotes(repo.path()).unwrap();
     }
 }

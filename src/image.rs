@@ -13,7 +13,7 @@ impl Config {
         let context = TempDir::create("pithos-build")?;
         let config_digest = self.digest()?;
         tracing::debug!(config_digest, "building image");
-        fs::write(context.0.join("Containerfile"), self.containerfile()?)
+        fs::write(context.path().join("Containerfile"), self.containerfile()?)
             .wrap_err("cannot write Containerfile")?;
         let status = Command::new("podman")
             .args([
@@ -25,7 +25,7 @@ impl Config {
                 "--file",
                 "Containerfile",
             ])
-            .arg(&context.0)
+            .arg(context.path())
             .status()
             .wrap_err("could not execute podman build")?;
         tracing::debug!(%status, "podman build finished");

@@ -219,8 +219,11 @@ mod tests {
     #[test]
     fn symlink_round_trip() {
         let dir = TempDir::create("pithos-platform-symlink").unwrap();
-        fs::write(dir.0.join("file.txt"), "content").unwrap();
-        symlink(&dir.0.join("file.txt"), &dir.0.join("link")).unwrap();
-        assert_eq!(fs::read_to_string(dir.0.join("link")).unwrap(), "content");
+        fs::write(dir.path().join("file.txt"), "content").unwrap();
+        symlink(&dir.path().join("file.txt"), &dir.path().join("link")).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("link")).unwrap(),
+            "content"
+        );
     }
 }

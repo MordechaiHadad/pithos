@@ -2,33 +2,88 @@ use eyre::{Result, eyre};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{Duration, SystemTime};
+use tempfile::Builder;
 
-pub(crate) struct TempDir(pub(crate) PathBuf);
+const ORPHAN_MIN_AGE: Duration = Duration::from_secs(60 * 60);
+
+pub(crate) struct TempDir(tempfile::TempDir);
 
 impl TempDir {
     pub(crate) fn create(prefix: &str) -> Result<Self> {
-        let path = temporary_path(prefix)?;
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path)?;
-        Ok(Self(path))
+        let dir = Builder::new()
+            .prefix(&format!("{prefix}-"))
+            .tempdir_in(temporary_base()?)?;
+        lock_active().push(dir.path().to_path_buf());
+        Ok(Self(dir))
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        self.0.path()
     }
 }
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        lock_active().retain(|path| path.as_path() != self.0.path());
     }
 }
 
-fn temporary_path(prefix: &str) -> Result<PathBuf> {
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+fn active_temp_dirs() -> &'static Mutex<Vec<PathBuf>> {
+    static ACTIVE: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
+    ACTIVE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn lock_active() -> MutexGuard<'static, Vec<PathBuf>> {
+    match active_temp_dirs().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => PoisonError::into_inner(poisoned),
+    }
+}
+
+pub(crate) fn remove_active_temp_dirs() {
+    for path in lock_active().drain(..) {
+        let _ = fs::remove_dir_all(path);
+    }
+}
+
+pub(crate) fn sweep_orphans(live_sandboxes: &[PathBuf]) -> Result<()> {
+    let base = temporary_base()?;
+    let Some(cutoff) = SystemTime::now().checked_sub(ORPHAN_MIN_AGE) else {
+        return Ok(());
+    };
+    for entry in fs::read_dir(&base)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if live_sandboxes.contains(&path) {
+            continue;
+        }
+        if entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| modified > cutoff)
+        {
+            continue;
+        }
+        if let Err(error) = fs::remove_dir_all(&path) {
+            tracing::warn!(path = %path.display(), %error, "could not remove orphaned temp directory");
+        }
+    }
+    let _ = fs::remove_dir(&base);
+    Ok(())
+}
+
+fn temporary_base() -> Result<PathBuf> {
     let base = dirs::data_dir()
         .ok_or_else(|| eyre!("cannot determine data directory"))?
         .join("pithos")
         .join("tmp");
     fs::create_dir_all(&base)?;
-    Ok(base.join(format!("{prefix}-{}-{stamp}", std::process::id())))
+    Ok(base)
 }
 
 pub(crate) fn copy_tree(source: &Path, destination: &Path, ignore: &[String]) -> Result<()> {
@@ -292,17 +347,17 @@ mod tests {
     fn copy_tree_preserves_files_dirs_and_symlinks() {
         let source = test_temp_dir("pithos-test-copy-source");
         let destination = test_temp_dir("pithos-test-copy-destination");
-        write_file(&source.0, "root.txt", "root");
-        write_file(&source.0, "sub/nested.txt", "nested");
-        make_symlink(&source.0, "link", "root.txt");
+        write_file(source.path(), "root.txt", "root");
+        write_file(source.path(), "sub/nested.txt", "nested");
+        make_symlink(source.path(), "link", "root.txt");
 
-        copy_tree(&source.0, &destination.0, &[]).unwrap();
+        copy_tree(source.path(), destination.path(), &[]).unwrap();
 
-        assert_trees_equal(&source.0, &destination.0);
-        let link_metadata = fs::symlink_metadata(destination.0.join("link")).unwrap();
+        assert_trees_equal(source.path(), destination.path());
+        let link_metadata = fs::symlink_metadata(destination.path().join("link")).unwrap();
         assert!(link_metadata.file_type().is_symlink());
         assert_eq!(
-            fs::read_link(destination.0.join("link")).unwrap(),
+            fs::read_link(destination.path().join("link")).unwrap(),
             Path::new("root.txt")
         );
     }
@@ -311,63 +366,93 @@ mod tests {
     fn copy_tree_skips_ignored_but_keeps_ephemeral() {
         let source = test_temp_dir("pithos-test-copy-ignore-source");
         let destination = test_temp_dir("pithos-test-copy-ignore-destination");
-        write_file(&source.0, "kept.txt", "kept");
-        write_file(&source.0, "ephemeral/cache.bin", "cache");
-        write_file(&source.0, "ignored/scratch.bin", "scratch");
+        write_file(source.path(), "kept.txt", "kept");
+        write_file(source.path(), "ephemeral/cache.bin", "cache");
+        write_file(source.path(), "ignored/scratch.bin", "scratch");
 
-        copy_tree(&source.0, &destination.0, &["ignored".to_string()]).unwrap();
+        copy_tree(source.path(), destination.path(), &["ignored".to_string()]).unwrap();
 
-        assert!(destination.0.join("kept.txt").exists());
-        assert!(destination.0.join("ephemeral/cache.bin").exists());
-        assert!(!destination.0.join("ignored").exists());
+        assert!(destination.path().join("kept.txt").exists());
+        assert!(destination.path().join("ephemeral/cache.bin").exists());
+        assert!(!destination.path().join("ignored").exists());
     }
 
     #[test]
     fn same_file_comparisons() {
         let first = test_temp_dir("pithos-test-same-first");
         let second = test_temp_dir("pithos-test-same-second");
-        write_file(&first.0, "equal.txt", "same");
-        write_file(&second.0, "equal.txt", "same");
-        write_file(&first.0, "different.txt", "one");
-        write_file(&second.0, "different.txt", "two");
-        write_file(&first.0, "one-sided.txt", "only first");
-        make_symlink(&first.0, "same-link", "equal.txt");
-        make_symlink(&second.0, "same-link", "equal.txt");
-        make_symlink(&first.0, "other-link", "different.txt");
-        make_symlink(&second.0, "other-link", "equal.txt");
-        fs::create_dir(first.0.join("dir")).unwrap();
-        fs::create_dir(second.0.join("dir")).unwrap();
+        write_file(first.path(), "equal.txt", "same");
+        write_file(second.path(), "equal.txt", "same");
+        write_file(first.path(), "different.txt", "one");
+        write_file(second.path(), "different.txt", "two");
+        write_file(first.path(), "one-sided.txt", "only first");
+        make_symlink(first.path(), "same-link", "equal.txt");
+        make_symlink(second.path(), "same-link", "equal.txt");
+        make_symlink(first.path(), "other-link", "different.txt");
+        make_symlink(second.path(), "other-link", "equal.txt");
+        fs::create_dir(first.path().join("dir")).unwrap();
+        fs::create_dir(second.path().join("dir")).unwrap();
 
-        assert!(same_file(&first.0.join("equal.txt"), &second.0.join("equal.txt")).unwrap());
         assert!(
-            !same_file(
-                &first.0.join("different.txt"),
-                &second.0.join("different.txt")
+            same_file(
+                &first.path().join("equal.txt"),
+                &second.path().join("equal.txt")
             )
             .unwrap()
         );
-        assert!(same_file(&first.0.join("missing.txt"), &second.0.join("missing.txt")).unwrap());
-        assert!(same_file(&first.0.join("dir"), &second.0.join("dir")).unwrap());
-        assert!(same_file(&first.0.join("same-link"), &second.0.join("same-link")).unwrap());
-        assert!(!same_file(&first.0.join("other-link"), &second.0.join("other-link")).unwrap());
-        assert!(!same_file(&first.0.join("one-sided.txt"), &second.0.join("equal.txt")).unwrap());
+        assert!(
+            !same_file(
+                &first.path().join("different.txt"),
+                &second.path().join("different.txt")
+            )
+            .unwrap()
+        );
+        assert!(
+            same_file(
+                &first.path().join("missing.txt"),
+                &second.path().join("missing.txt")
+            )
+            .unwrap()
+        );
+        assert!(same_file(&first.path().join("dir"), &second.path().join("dir")).unwrap());
+        assert!(
+            same_file(
+                &first.path().join("same-link"),
+                &second.path().join("same-link")
+            )
+            .unwrap()
+        );
+        assert!(
+            !same_file(
+                &first.path().join("other-link"),
+                &second.path().join("other-link")
+            )
+            .unwrap()
+        );
+        assert!(
+            !same_file(
+                &first.path().join("one-sided.txt"),
+                &second.path().join("equal.txt")
+            )
+            .unwrap()
+        );
     }
 
     #[test]
     fn has_changes_detects_add_modify_delete_and_unmanaged() {
         let host = test_temp_dir("pithos-test-changes-host");
         let sandbox = test_temp_dir("pithos-test-changes-sandbox");
-        write_file(&host.0, "modified.txt", "host");
-        write_file(&sandbox.0, "modified.txt", "sandbox");
-        write_file(&host.0, "unchanged.txt", "same");
-        write_file(&sandbox.0, "unchanged.txt", "same");
-        write_file(&host.0, "deleted.txt", "gone");
-        write_file(&host.0, "unmanaged/config.txt", "secret");
-        write_file(&sandbox.0, "unmanaged/config.txt", "also secret");
-        write_file(&sandbox.0, "added.txt", "new");
+        write_file(host.path(), "modified.txt", "host");
+        write_file(sandbox.path(), "modified.txt", "sandbox");
+        write_file(host.path(), "unchanged.txt", "same");
+        write_file(sandbox.path(), "unchanged.txt", "same");
+        write_file(host.path(), "deleted.txt", "gone");
+        write_file(host.path(), "unmanaged/config.txt", "secret");
+        write_file(sandbox.path(), "unmanaged/config.txt", "also secret");
+        write_file(sandbox.path(), "added.txt", "new");
         let unmanaged = vec!["unmanaged".to_string()];
 
-        let changed = has_changes(&host.0, &sandbox.0, &unmanaged).unwrap();
+        let changed = has_changes(host.path(), sandbox.path(), &unmanaged).unwrap();
 
         assert_eq!(
             changed,
@@ -383,43 +468,46 @@ mod tests {
     fn apply_tree_round_trip() {
         let host = test_temp_dir("pithos-test-apply-host");
         let sandbox = test_temp_dir("pithos-test-apply-sandbox");
-        write_file(&host.0, "keep.txt", "keep");
-        write_file(&sandbox.0, "keep.txt", "keep");
-        write_file(&host.0, "sub/modified.txt", "host");
-        write_file(&sandbox.0, "sub/modified.txt", "sandbox");
-        write_file(&host.0, "sub/removed.txt", "remove me");
-        write_file(&sandbox.0, "added.txt", "new");
-        write_file(&sandbox.0, "sub/new/deep.txt", "deep");
-        make_symlink(&host.0, "removed-link", "keep.txt");
-        make_symlink(&sandbox.0, "added-link", "added.txt");
+        write_file(host.path(), "keep.txt", "keep");
+        write_file(sandbox.path(), "keep.txt", "keep");
+        write_file(host.path(), "sub/modified.txt", "host");
+        write_file(sandbox.path(), "sub/modified.txt", "sandbox");
+        write_file(host.path(), "sub/removed.txt", "remove me");
+        write_file(sandbox.path(), "added.txt", "new");
+        write_file(sandbox.path(), "sub/new/deep.txt", "deep");
+        make_symlink(host.path(), "removed-link", "keep.txt");
+        make_symlink(sandbox.path(), "added-link", "added.txt");
 
-        apply_tree(&sandbox.0, &host.0, &[]).unwrap();
+        apply_tree(sandbox.path(), host.path(), &[]).unwrap();
 
-        assert_trees_equal(&sandbox.0, &host.0);
+        assert_trees_equal(sandbox.path(), host.path());
     }
 
     #[test]
     fn apply_tree_respects_unmanaged() {
         let host = test_temp_dir("pithos-test-exclude-host");
         let sandbox = test_temp_dir("pithos-test-exclude-sandbox");
-        write_file(&host.0, "keep.txt", "host");
-        write_file(&sandbox.0, "keep.txt", "sandbox");
-        write_file(&host.0, "unmanaged/config.txt", "host secret");
-        write_file(&sandbox.0, "unmanaged/config.txt", "sandbox secret");
-        write_file(&sandbox.0, "added.txt", "new");
+        write_file(host.path(), "keep.txt", "host");
+        write_file(sandbox.path(), "keep.txt", "sandbox");
+        write_file(host.path(), "unmanaged/config.txt", "host secret");
+        write_file(sandbox.path(), "unmanaged/config.txt", "sandbox secret");
+        write_file(sandbox.path(), "added.txt", "new");
         let unmanaged = vec!["unmanaged".to_string()];
 
-        apply_tree(&sandbox.0, &host.0, &unmanaged).unwrap();
+        apply_tree(sandbox.path(), host.path(), &unmanaged).unwrap();
 
         assert_eq!(
-            fs::read_to_string(host.0.join("keep.txt")).unwrap(),
+            fs::read_to_string(host.path().join("keep.txt")).unwrap(),
             "sandbox"
         );
         assert_eq!(
-            fs::read_to_string(host.0.join("unmanaged/config.txt")).unwrap(),
+            fs::read_to_string(host.path().join("unmanaged/config.txt")).unwrap(),
             "host secret"
         );
-        assert_eq!(fs::read_to_string(host.0.join("added.txt")).unwrap(), "new");
+        assert_eq!(
+            fs::read_to_string(host.path().join("added.txt")).unwrap(),
+            "new"
+        );
     }
 
     #[test]

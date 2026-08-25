@@ -87,6 +87,7 @@ fn main() -> ExitCode {
 fn execute() -> Result<()> {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
+    spawn_signal_cleanup();
     if cli.yes && cli.no {
         bail!("--yes and --no cannot be combined")
     }
@@ -123,6 +124,25 @@ fn execute() -> Result<()> {
         ),
     }
 }
+
+#[cfg(unix)]
+fn spawn_signal_cleanup() {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+    use signal_hook::iterator::Signals;
+
+    let Ok(mut signals) = Signals::new([SIGINT, SIGTERM, SIGHUP]) else {
+        return;
+    };
+    std::thread::spawn(move || {
+        if let Some(signal) = signals.forever().next() {
+            sandbox::remove_active_temp_dirs();
+            std::process::exit(128 + signal);
+        }
+    });
+}
+
+#[cfg(not(unix))]
+fn spawn_signal_cleanup() {}
 
 fn init_tracing(verbose: u8) {
     let env_filter = if verbose > 0 {

@@ -251,7 +251,7 @@ mod tests {
     fn registered_hook_finds_matching_annotation() {
         let dir = TempDir::create("pithos-hook-test").unwrap();
         fs::write(
-            dir.0.join("pithos-egress-cap.json"),
+            dir.path().join("pithos-egress-cap.json"),
             r#"{
               "version": "1.0.0",
               "hook": { "path": "/usr/local/bin/pithos-egress-cap.sh", "args": [] },
@@ -261,7 +261,7 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            dir.0.join("other.json"),
+            dir.path().join("other.json"),
             r#"{
               "version": "1.0.0",
               "hook": { "path": "/usr/local/bin/other.sh", "args": [] },
@@ -271,7 +271,7 @@ mod tests {
         )
         .unwrap();
 
-        let (json_path, hook_path) = registered_hook(std::slice::from_ref(&dir.0)).unwrap();
+        let (json_path, hook_path) = registered_hook(&[dir.path().to_path_buf()]).unwrap();
         assert_eq!(
             json_path.file_name().unwrap().to_str().unwrap(),
             "pithos-egress-cap.json"
@@ -286,7 +286,7 @@ mod tests {
     fn registered_hook_returns_none_without_match() {
         let dir = TempDir::create("pithos-hook-test-none").unwrap();
         fs::write(
-            dir.0.join("other.json"),
+            dir.path().join("other.json"),
             r#"{
               "version": "1.0.0",
               "hook": { "path": "/usr/local/bin/other.sh", "args": [] },
@@ -295,7 +295,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        assert!(registered_hook(std::slice::from_ref(&dir.0)).is_none());
+        assert!(registered_hook(&[dir.path().to_path_buf()]).is_none());
     }
 
     #[test]

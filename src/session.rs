@@ -108,7 +108,7 @@ fn view_changes(
             *session_view = Some(build_session_view(source, sandbox, unmanaged)?);
         }
         let view = session_view.as_ref().expect("session view built above");
-        run_viewer(viewer, &view.0.join("repo"))
+        run_viewer(viewer, &view.path().join("repo"))
     } else {
         print_diff(changed, source, sandbox)
     }
@@ -116,11 +116,11 @@ fn view_changes(
 
 fn build_session_view(source: &Path, sandbox: &Path, unmanaged: &[String]) -> Result<TempDir> {
     let temp = TempDir::create("pithos-session")?;
-    let bundle_path = temp.0.join("session.bundle").display().to_string();
+    let bundle_path = temp.path().join("session.bundle").display().to_string();
     let branch = current_branch(source)?;
     git_ok(source, &["bundle", "create", &bundle_path, &branch])
         .wrap_err("could not create session bundle")?;
-    let repo_dir = temp.0.join("repo");
+    let repo_dir = temp.path().join("repo");
     let repo_path = repo_dir.display().to_string();
     git_ok(source, &["clone", &bundle_path, &repo_path])
         .wrap_err("could not clone session bundle")?;
@@ -311,21 +311,21 @@ mod tests {
     fn change_kind_classifies_add_modified_and_deleted() {
         let source = TempDir::create("pithos-test-kind-source").unwrap();
         let sandbox = TempDir::create("pithos-test-kind-sandbox").unwrap();
-        write(&source.0, "modified.txt", "host");
-        write(&sandbox.0, "modified.txt", "sandbox");
-        write(&source.0, "deleted.txt", "gone");
-        write(&sandbox.0, "added.txt", "new");
+        write(source.path(), "modified.txt", "host");
+        write(sandbox.path(), "modified.txt", "sandbox");
+        write(source.path(), "deleted.txt", "gone");
+        write(sandbox.path(), "added.txt", "new");
 
         assert_eq!(
-            change_kind(&source.0, &sandbox.0, Path::new("added.txt")),
+            change_kind(source.path(), sandbox.path(), Path::new("added.txt")),
             ChangeKind::Added
         );
         assert_eq!(
-            change_kind(&source.0, &sandbox.0, Path::new("modified.txt")),
+            change_kind(source.path(), sandbox.path(), Path::new("modified.txt")),
             ChangeKind::Modified
         );
         assert_eq!(
-            change_kind(&source.0, &sandbox.0, Path::new("deleted.txt")),
+            change_kind(source.path(), sandbox.path(), Path::new("deleted.txt")),
             ChangeKind::Deleted
         );
     }
@@ -334,14 +334,17 @@ mod tests {
     fn change_counts_tally_kinds() {
         let source = TempDir::create("pithos-test-count-source").unwrap();
         let sandbox = TempDir::create("pithos-test-count-sandbox").unwrap();
-        write(&source.0, "modified.txt", "host");
-        write(&sandbox.0, "modified.txt", "sandbox");
-        write(&source.0, "deleted.txt", "gone");
-        write(&sandbox.0, "added.txt", "new");
-        write(&sandbox.0, "also-added.txt", "new");
+        write(source.path(), "modified.txt", "host");
+        write(sandbox.path(), "modified.txt", "sandbox");
+        write(source.path(), "deleted.txt", "gone");
+        write(sandbox.path(), "added.txt", "new");
+        write(sandbox.path(), "also-added.txt", "new");
 
-        let changed = has_changes(&source.0, &sandbox.0, &[]).unwrap();
-        assert_eq!(change_counts(&changed, &source.0, &sandbox.0), (2, 1, 1));
+        let changed = has_changes(source.path(), sandbox.path(), &[]).unwrap();
+        assert_eq!(
+            change_counts(&changed, source.path(), sandbox.path()),
+            (2, 1, 1)
+        );
     }
 
     #[test]
@@ -398,13 +401,13 @@ mod tests {
     #[test]
     fn build_session_view_clones_base_and_overlays_changes() {
         let source = TempDir::create("pithos-test-view-source").unwrap();
-        commit_base(&source.0);
+        commit_base(source.path());
         let sandbox = TempDir::create("pithos-test-view-sandbox").unwrap();
-        copy_tree(&source.0, &sandbox.0, &[]).unwrap();
-        write(&sandbox.0, "file.txt", "changed");
+        copy_tree(source.path(), sandbox.path(), &[]).unwrap();
+        write(sandbox.path(), "file.txt", "changed");
 
-        let view = build_session_view(&source.0, &sandbox.0, &[]).unwrap();
-        let repo = view.0.join("repo");
+        let view = build_session_view(source.path(), sandbox.path(), &[]).unwrap();
+        let repo = view.path().join("repo");
 
         assert!(repo.join(".git").exists());
         assert_eq!(
@@ -420,13 +423,13 @@ mod tests {
     #[test]
     fn build_session_view_ignores_sandbox_commits() {
         let source = TempDir::create("pithos-test-view-committed-source").unwrap();
-        commit_base(&source.0);
+        commit_base(source.path());
         let sandbox = TempDir::create("pithos-test-view-committed-sandbox").unwrap();
-        copy_tree(&source.0, &sandbox.0, &[]).unwrap();
-        write(&sandbox.0, "file.txt", "changed");
-        git_ok(&sandbox.0, &["add", "-A"]).unwrap();
+        copy_tree(source.path(), sandbox.path(), &[]).unwrap();
+        write(sandbox.path(), "file.txt", "changed");
+        git_ok(sandbox.path(), &["add", "-A"]).unwrap();
         git_ok(
-            &sandbox.0,
+            sandbox.path(),
             &[
                 "-c",
                 "user.name=Pithos",
@@ -439,8 +442,8 @@ mod tests {
         )
         .unwrap();
 
-        let view = build_session_view(&source.0, &sandbox.0, &[]).unwrap();
-        let repo = view.0.join("repo");
+        let view = build_session_view(source.path(), sandbox.path(), &[]).unwrap();
+        let repo = view.path().join("repo");
 
         let output = git(&repo, &["rev-list", "--count", "HEAD"]).unwrap();
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1");
@@ -455,14 +458,15 @@ mod tests {
     #[test]
     fn build_session_view_respects_unmanaged_paths() {
         let source = TempDir::create("pithos-test-view-exclude-source").unwrap();
-        commit_base(&source.0);
+        commit_base(source.path());
         let sandbox = TempDir::create("pithos-test-view-exclude").unwrap();
-        copy_tree(&source.0, &sandbox.0, &[]).unwrap();
-        write(&sandbox.0, "keep.txt", "changed");
-        write(&sandbox.0, "secret.txt", "changed too");
+        copy_tree(source.path(), sandbox.path(), &[]).unwrap();
+        write(sandbox.path(), "keep.txt", "changed");
+        write(sandbox.path(), "secret.txt", "changed too");
 
-        let view = build_session_view(&source.0, &sandbox.0, &["secret.txt".to_string()]).unwrap();
-        let repo = view.0.join("repo");
+        let view =
+            build_session_view(source.path(), sandbox.path(), &["secret.txt".to_string()]).unwrap();
+        let repo = view.path().join("repo");
 
         assert_eq!(
             fs::read_to_string(repo.join("keep.txt")).unwrap(),

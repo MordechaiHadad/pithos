@@ -244,13 +244,13 @@ mod tests {
     fn pull_applies_mirror_semantics_respecting_unmanaged() {
         let repo = TempDir::create("pithos-pull-repo").unwrap();
         let sandbox = TempDir::create("pithos-pull-sandbox").unwrap();
-        write(&repo.0, "modified.txt", "host");
-        write(&sandbox.0, "modified.txt", "sandbox");
-        write(&repo.0, "removed.txt", "gone");
-        write(&sandbox.0, "added.txt", "new");
-        write(&repo.0, "scratch/cache.txt", "host cache");
-        write(&sandbox.0, "scratch/cache.txt", "sandbox cache");
-        let record = pull_record(&repo.0, &sandbox.0, &["scratch"]);
+        write(repo.path(), "modified.txt", "host");
+        write(sandbox.path(), "modified.txt", "sandbox");
+        write(repo.path(), "removed.txt", "gone");
+        write(sandbox.path(), "added.txt", "new");
+        write(repo.path(), "scratch/cache.txt", "host cache");
+        write(sandbox.path(), "scratch/cache.txt", "sandbox cache");
+        let record = pull_record(repo.path(), sandbox.path(), &["scratch"]);
 
         let outcome = pull_workspace(
             &record,
@@ -266,17 +266,20 @@ mod tests {
 
         assert!(outcome.applied);
         assert_eq!(
-            fs::read_to_string(repo.0.join("modified.txt")).unwrap(),
+            fs::read_to_string(repo.path().join("modified.txt")).unwrap(),
             "sandbox"
         );
-        assert_eq!(fs::read_to_string(repo.0.join("added.txt")).unwrap(), "new");
-        assert!(!repo.0.join("removed.txt").exists());
         assert_eq!(
-            fs::read_to_string(repo.0.join("scratch/cache.txt")).unwrap(),
+            fs::read_to_string(repo.path().join("added.txt")).unwrap(),
+            "new"
+        );
+        assert!(!repo.path().join("removed.txt").exists());
+        assert_eq!(
+            fs::read_to_string(repo.path().join("scratch/cache.txt")).unwrap(),
             "host cache"
         );
         assert_eq!(
-            fs::read_to_string(sandbox.0.join("modified.txt")).unwrap(),
+            fs::read_to_string(sandbox.path().join("modified.txt")).unwrap(),
             "sandbox"
         );
     }
@@ -285,10 +288,10 @@ mod tests {
     fn pull_dry_run_leaves_both_trees_untouched() {
         let repo = TempDir::create("pithos-pull-dry-repo").unwrap();
         let sandbox = TempDir::create("pithos-pull-dry-sandbox").unwrap();
-        write(&repo.0, "file.txt", "host");
-        write(&sandbox.0, "file.txt", "sandbox");
-        write(&sandbox.0, "added.txt", "new");
-        let record = pull_record(&repo.0, &sandbox.0, &[]);
+        write(repo.path(), "file.txt", "host");
+        write(sandbox.path(), "file.txt", "sandbox");
+        write(sandbox.path(), "added.txt", "new");
+        let record = pull_record(repo.path(), sandbox.path(), &[]);
 
         let outcome = pull_workspace(
             &record,
@@ -303,24 +306,30 @@ mod tests {
         .unwrap();
 
         assert!(!outcome.applied);
-        assert_eq!(fs::read_to_string(repo.0.join("file.txt")).unwrap(), "host");
-        assert!(!repo.0.join("added.txt").exists());
-        assert_eq!(has_changes(&repo.0, &sandbox.0, &[]).unwrap().len(), 2);
+        assert_eq!(
+            fs::read_to_string(repo.path().join("file.txt")).unwrap(),
+            "host"
+        );
+        assert!(!repo.path().join("added.txt").exists());
+        assert_eq!(
+            has_changes(repo.path(), sandbox.path(), &[]).unwrap().len(),
+            2
+        );
     }
 
     #[test]
     fn pull_targets_override_directory() {
         let sandbox = TempDir::create("pithos-pull-target-sandbox").unwrap();
         let checkout = TempDir::create("pithos-pull-checkout").unwrap();
-        fs::create_dir_all(checkout.0.join("nested/deeper")).unwrap();
-        write(&sandbox.0, "sub/file.txt", "from sandbox");
-        write(&checkout.0, "nested/deeper/stale.txt", "delete me");
-        let mut record = pull_record(&checkout.0, &sandbox.0, &[]);
-        record.repo_path = checkout.0.join("elsewhere");
+        fs::create_dir_all(checkout.path().join("nested/deeper")).unwrap();
+        write(sandbox.path(), "sub/file.txt", "from sandbox");
+        write(checkout.path(), "nested/deeper/stale.txt", "delete me");
+        let mut record = pull_record(checkout.path(), sandbox.path(), &[]);
+        record.repo_path = checkout.path().join("elsewhere");
 
         let outcome = pull_workspace(
             &record,
-            Some(&checkout.0.join("nested").join(".")),
+            Some(&checkout.path().join("nested").join(".")),
             PullOptions {
                 auto_yes: true,
                 auto_no: false,
@@ -331,13 +340,13 @@ mod tests {
         .unwrap();
 
         assert!(outcome.applied);
-        assert_eq!(outcome.target, checkout.0.join("nested"));
+        assert_eq!(outcome.target, checkout.path().join("nested"));
         assert_eq!(
             fs::read_to_string(outcome.target.join("sub/file.txt")).unwrap(),
             "from sandbox"
         );
         assert!(!outcome.target.join("deeper/stale.txt").exists());
-        assert!(!checkout.0.join("elsewhere").is_file());
+        assert!(!checkout.path().join("elsewhere").is_file());
     }
 
     #[test]
@@ -345,8 +354,8 @@ mod tests {
         let repo = TempDir::create("pithos-pull-missing-repo").unwrap();
         let sandbox = TempDir::create("pithos-pull-missing-sandbox").unwrap();
         let missing_repo_record = {
-            let mut record = pull_record(&repo.0, &sandbox.0, &[]);
-            record.repo_path = repo.0.join("gone");
+            let mut record = pull_record(repo.path(), sandbox.path(), &[]);
+            record.repo_path = repo.path().join("gone");
             record
         };
         assert!(
@@ -365,11 +374,11 @@ mod tests {
             .contains("no longer exists")
         );
 
-        let record = pull_record(&repo.0, &sandbox.0, &[]);
+        let record = pull_record(repo.path(), sandbox.path(), &[]);
         assert!(
             pull_workspace(
                 &record,
-                Some(&repo.0.join("missing-dir")),
+                Some(&repo.path().join("missing-dir")),
                 PullOptions {
                     auto_yes: true,
                     auto_no: false,
@@ -387,13 +396,13 @@ mod tests {
     fn pull_report_classifies_kinds() {
         let repo = TempDir::create("pithos-pull-report-repo").unwrap();
         let sandbox = TempDir::create("pithos-pull-report-sandbox").unwrap();
-        write(&repo.0, "modified.txt", "host");
-        write(&sandbox.0, "modified.txt", "sandbox");
-        write(&repo.0, "deleted.txt", "gone");
-        write(&sandbox.0, "added.txt", "new");
-        let changed = has_changes(&repo.0, &sandbox.0, &[]).unwrap();
+        write(repo.path(), "modified.txt", "host");
+        write(sandbox.path(), "modified.txt", "sandbox");
+        write(repo.path(), "deleted.txt", "gone");
+        write(sandbox.path(), "added.txt", "new");
+        let changed = has_changes(repo.path(), sandbox.path(), &[]).unwrap();
 
-        let report = build_pull_report("sess-0001", &sandbox.0, &repo.0, &changed, false);
+        let report = build_pull_report("sess-0001", sandbox.path(), repo.path(), &changed, false);
 
         assert_eq!(report.session, "sess-0001");
         assert!(!report.applied);

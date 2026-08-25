@@ -61,6 +61,13 @@ pub(crate) fn list() -> Vec<SessionRecord> {
     list_in(&runtime_dir())
 }
 
+pub(crate) fn sandbox_paths() -> Vec<PathBuf> {
+    list()
+        .into_iter()
+        .map(|record| record.sandbox_path)
+        .collect()
+}
+
 pub(crate) fn remove(id: &str) {
     remove_in(&runtime_dir(), id);
 }
@@ -254,10 +261,10 @@ mod tests {
     #[test]
     fn round_trip_preserves_fields_and_orders_by_start_time() {
         let dir = TempDir::create("pithos-registry-roundtrip").unwrap();
-        save_in(&dir.0, &sample_record("b-0002", 200)).unwrap();
-        save_in(&dir.0, &sample_record("a-0001", 100)).unwrap();
+        save_in(dir.path(), &sample_record("b-0002", 200)).unwrap();
+        save_in(dir.path(), &sample_record("a-0001", 100)).unwrap();
 
-        let sessions = list_in(&dir.0);
+        let sessions = list_in(dir.path());
 
         assert_eq!(sessions.len(), 2);
         assert_eq!(sessions[0].id, "a-0001");
@@ -273,9 +280,9 @@ mod tests {
         let mut record = sample_record("pull-0001", 10);
         record.unmanaged = vec!["target".to_string()];
         record.diff_viewer = Some("difftool -dir {dir}".to_string());
-        save_in(&dir.0, &record).unwrap();
+        save_in(dir.path(), &record).unwrap();
 
-        let sessions = list_in(&dir.0);
+        let sessions = list_in(dir.path());
 
         assert_eq!(sessions[0].unmanaged, vec!["target".to_string()]);
         assert_eq!(
@@ -287,11 +294,11 @@ mod tests {
     #[test]
     fn list_skips_corrupt_and_non_json_files() {
         let dir = TempDir::create("pithos-registry-corrupt").unwrap();
-        save_in(&dir.0, &sample_record("good", 1)).unwrap();
-        fs::write(dir.0.join("broken.json"), "not json").unwrap();
-        fs::write(dir.0.join("ignored.txt"), "{}").unwrap();
+        save_in(dir.path(), &sample_record("good", 1)).unwrap();
+        fs::write(dir.path().join("broken.json"), "not json").unwrap();
+        fs::write(dir.path().join("ignored.txt"), "{}").unwrap();
 
-        let sessions = list_in(&dir.0);
+        let sessions = list_in(dir.path());
 
         assert_eq!(
             sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
@@ -302,12 +309,12 @@ mod tests {
     #[test]
     fn remove_deletes_only_target_record() {
         let dir = TempDir::create("pithos-registry-remove").unwrap();
-        save_in(&dir.0, &sample_record("keep", 1)).unwrap();
-        save_in(&dir.0, &sample_record("drop", 2)).unwrap();
+        save_in(dir.path(), &sample_record("keep", 1)).unwrap();
+        save_in(dir.path(), &sample_record("drop", 2)).unwrap();
 
-        remove_in(&dir.0, "drop");
+        remove_in(dir.path(), "drop");
 
-        let sessions = list_in(&dir.0);
+        let sessions = list_in(dir.path());
         assert_eq!(
             sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
             ["keep"]
@@ -361,8 +368,8 @@ mod tests {
         let sandbox = TempDir::create("pithos-registry-new-sandbox").unwrap();
 
         let record = SessionRecord::new(
-            &repository.0,
-            &sandbox.0,
+            repository.path(),
+            sandbox.path(),
             "localhost/pithos-opencode:latest",
             "/workspace",
             "1000:1000",
@@ -372,7 +379,7 @@ mod tests {
 
         assert!(record.id.starts_with("pithos-registry-new-"));
         assert_eq!(record.container_name, format!("pithos-{}", record.id));
-        assert_eq!(record.sandbox_path, sandbox.0);
+        assert_eq!(record.sandbox_path, sandbox.path());
         assert_eq!(record.user, "1000:1000");
     }
 }

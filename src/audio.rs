@@ -63,11 +63,12 @@ mod tests {
     #[test]
     fn builds_mount_and_env_for_existing_socket() {
         let dir = TempDir::create("pithos-test-audio-socket").unwrap();
-        let socket = dir.0.join("pulse/native");
+        let socket = dir.path().join("pulse/native");
         std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
         std::fs::write(&socket, "").unwrap();
 
-        let passthrough = passthrough_in(Some(&dir.0)).expect("passthrough for an existing socket");
+        let passthrough =
+            passthrough_in(Some(dir.path())).expect("passthrough for an existing socket");
         let uid = crate::platform::current_uid();
         assert_eq!(
             passthrough.volume,
@@ -88,7 +89,7 @@ mod tests {
     #[test]
     fn skips_when_the_socket_is_missing() {
         let dir = TempDir::create("pithos-test-audio-empty").unwrap();
-        assert!(passthrough_in(Some(&dir.0)).is_none());
+        assert!(passthrough_in(Some(dir.path())).is_none());
     }
 
     #[test]
