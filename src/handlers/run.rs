@@ -87,7 +87,7 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
             command.args(["--env", &format!("{key}={value}")]);
         }
     }
-    config.harness.mount(&mut command)?;
+    config.harness.mount(&mut command, &record.id)?;
     config.networking.apply_to(&mut command)?;
     if let Some(audio) = crate::audio::passthrough(config.audio) {
         tracing::debug!(volume = %audio.volume, "passing host audio through");

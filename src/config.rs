@@ -59,6 +59,8 @@ pub(crate) const DEFAULT_WHITELIST: &[&str] = &[
     "api.tavily.com",
     "api.search.brave.com",
     "google.serper.dev",
+    "api.anthropic.com",
+    "statsig.anthropic.com",
 ];
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -275,6 +277,7 @@ impl Config {
         if self.harness.command().is_empty() {
             bail!("harness.command cannot be empty")
         }
+        self.harness.validate()?;
         if self.workspace.is_empty() || !self.workspace.starts_with('/') {
             bail!("workspace must be an absolute container path")
         }
@@ -940,6 +943,8 @@ mod tests {
                 "api.tavily.com",
                 "api.search.brave.com",
                 "google.serper.dev",
+                "api.anthropic.com",
+                "statsig.anthropic.com",
             ]
         );
     }

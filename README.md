@@ -301,8 +301,8 @@ mise = ["neovim", "lua-language-server", "node@22"]
 
 ### Harness settings
 
-The required `[harness]` table selects the agent harness. The currently
-supported harness is OpenCode:
+The required `[harness]` table selects the agent harness. Two harnesses are
+currently supported, OpenCode and Claude Code:
 
 ```toml
 [harness]
@@ -310,11 +310,83 @@ name = "opencode"
 command = ["opencode", "/workspace"]
 ```
 
-`command` is the command run when the container starts. It defaults to
-`["opencode", "/workspace"]`.
+```toml
+[harness]
+name = "claude-code"
+credentials = true
+```
 
-`[harness.allowlist]` configures OpenCode permissions. Values can be
-`allow`, `ask`, or `deny`, depending on the operation.
+`command` is the command run when the container starts. It defaults to
+`["opencode", "/workspace"]` for OpenCode and `["claude"]` for Claude Code.
+Claude Code treats positional arguments as prompts, so the default command is
+deliberately bare; the container already starts in the workspace directory.
+
+#### OpenCode paths
+
+OpenCode state lives under the host's XDG directories. Sessions mount
+`auth.json` read-only when `credentials = true`, pin the session database
+(`opencode.db`, `-wal`, `-shm`) and small state files (`kv.json`,
+`session.json`, `model.json`, `prompt-history.jsonl`) read-write to their
+host locations so history survives across sessions, mount
+`~/.config/opencode` read-only when credentials or an allowlist are set, and
+cover everything else with tmpfs.
+
+#### Claude Code paths
+
+Claude Code sessions mirror the same persistence model:
+
+| Container path | Host backing | Mode |
+| --- | --- | --- |
+| `~/.claude/.credentials.json` | `~/.claude/.credentials.json` | read-only, gated on `credentials` |
+| `~/.claude.json` | `~/.local/share/claude-code/claude.json` | read-write |
+| `~/.claude/projects` | `~/.local/share/claude-code/projects` | read-write directory |
+| `~/.claude/history.jsonl` | `~/.local/share/claude-code/history.jsonl` | read-write |
+| `~/.claude/settings.json` | generated per-session file | read-only |
+| `~/.claude/{CLAUDE.md,keybindings.json,skills,agents,commands,rules,output-styles,themes,workflows}` | same host paths | read-only when they exist |
+
+Transcripts, auto memory, and prompt history therefore survive across
+sessions, while `todos`, `shell-snapshots`, and `statsig` stay ephemeral.
+
+On macOS, Claude Code keeps OAuth credentials in the system Keychain instead
+of `.credentials.json`. Pithos cannot mount Keychain items; when
+`credentials = true` and no credentials file exists on a macOS host, it warns
+before starting an unauthenticated session. Either export the credentials
+once:
+
+```sh
+security find-generic-password -s "Claude Code-credentials" -w \
+  > ~/.claude/.credentials.json && chmod 600 ~/.claude/.credentials.json
+```
+
+or generate a long-lived token with `claude setup-token` and pass it through
+the global configuration:
+
+```toml
+[environment]
+CLAUDE_CODE_OAUTH_TOKEN = "..."
+```
+
+Read-only credential mounts mean OAuth token rotation cannot be written
+back; re-run `/login` on the host if a session reports expired tokens.
+
+#### Allowlists
+
+`[harness.allowlist]` configures permissions. For OpenCode the object is
+passed through verbatim as `OPENCODE_CONFIG_CONTENT`. For Claude Code the
+supported keys are translated into a generated `settings.json` whose
+`permissions` key replaces the user's own (all other keys, such as `model`
+or `hooks`, are preserved):
+
+| pithos | Claude Code rule | verdict list |
+| --- | --- | --- |
+| `bash."git *" = "allow"` | `"Bash(git *)"` | `permissions.allow` |
+| `bash."*" = "ask"` | `"Bash(*)"` | `permissions.ask` |
+| `bash."curl -T *" = "deny"` | `"Bash(curl -T *)"` | `permissions.deny` |
+| `edit = "allow"` | `"Edit"`, `"Write"` | that verdict's list |
+
+Claude Code evaluates deny, then ask, then allow. Other allowlist keys are
+rejected for Claude Code at configuration time; verify the effective rules
+with `claude /permissions`.
 
 ```toml
 [harness.allowlist]
@@ -366,7 +438,8 @@ It is `true` by default.
 `whitelist` adds HTTPS hosts that bypass these limits.
 
 `use_default_whitelist` controls the built-in fast-lane hosts. It is `true`
-by default and includes `opencode.ai`, the Exa search APIs (`mcp.exa.ai`,
+by default and includes `opencode.ai`, `api.anthropic.com` (Claude Code),
+the Exa search APIs (`mcp.exa.ai`,
 `api.exa.ai`), the Parallel Web Systems search endpoints (`api.parallel.ai`,
 `search.parallel.ai`, `task-mcp.parallel.ai`), and common agent search
 providers (`api.tavily.com`, `api.search.brave.com`, `google.serper.dev`).

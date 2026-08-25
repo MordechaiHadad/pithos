@@ -333,6 +333,8 @@ mod tests {
                 "api.tavily.com".to_string(),
                 "api.search.brave.com".to_string(),
                 "google.serper.dev".to_string(),
+                "api.anthropic.com".to_string(),
+                "statsig.anthropic.com".to_string(),
                 "proxy.example.com".to_string(),
             ]
         );
