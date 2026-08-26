@@ -15,11 +15,6 @@ pub(crate) fn tmpfs_spec(target: &str) -> String {
     format!("{target}:rw,mode=1777")
 }
 
-/// Tmpfs mount private to the agent user instead of world-writable.
-pub(crate) fn owned_tmpfs_spec(target: &str) -> String {
-    format!("type=tmpfs,dst={target},tmpfs-mode=0700,U=true")
-}
-
 struct HarnessPaths {
     data: PathBuf,
     state: PathBuf,
@@ -555,18 +550,6 @@ mod tests {
         assert_eq!(
             tmpfs_spec(&format!("{AGENT_HOME}/.cache")),
             "/home/agent/.cache:rw,mode=1777"
-        );
-    }
-
-    #[test]
-    fn owned_tmpfs_spec_scopes_mount_to_the_agent_user() {
-        assert_eq!(
-            owned_tmpfs_spec("/home/agent"),
-            "type=tmpfs,dst=/home/agent,tmpfs-mode=0700,U=true"
-        );
-        assert_eq!(
-            owned_tmpfs_spec("/run/user/1000"),
-            "type=tmpfs,dst=/run/user/1000,tmpfs-mode=0700,U=true"
         );
     }
 

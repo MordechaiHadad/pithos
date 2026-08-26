@@ -17,8 +17,8 @@ from the container settings.
 Workspace copies use filesystem copy-on-write clones where available (btrfs,
 XFS, ZFS, APFS, ReFS); other filesystems silently fall back to regular copies.
 
-Network restrictions require nftables support and an OCI hook. Pithos embeds
-and installs its hook automatically when a session starts.
+Network restrictions work out of the box; no host-side setup or privileges
+are required.
 
 On macOS and Windows, Pithos runs as a native binary and talks to a Linux
 podman machine (`podman machine init` + `podman machine start`). Everything the
@@ -32,19 +32,14 @@ module, so no Linux compatibility layer is required on the host side.
    podman machine init
    podman machine start
    ```
-2. Install nftables inside the machine so egress caps work
-   (`sudo apt install nftables`). Pithos installs its embedded OCI hook there
-   automatically.
-3. Build and run:
+2. Build and run:
    ```sh
    pithos build
    pithos run
    ```
 
-The hook script reads the ruleset from the `pithos.networking-rules`
-annotation, so it never depends on a host path that a Windows host cannot
-provide. `pithos run` verifies the setup with `podman machine ssh` and prints
-the hook path found inside the machine.
+Egress rules ship inside the image itself, so nothing has to be installed in
+the podman machine.
 
 ## Usage
 
@@ -463,20 +458,8 @@ use_default_whitelist = true
 block_private = true
 ```
 
-### Enforcement guarantees
-
-Podman only scans its built-in hook directories when no explicit value is
-given, and those defaults never include user-writable locations, so pithos
-passes `--hooks-dir` explicitly on every native run and installs its embedded
-hook into a directory from that list. Inside a podman machine (macOS and
-Windows) the hook is installed under `/usr/share/containers/oci/hooks.d`,
-which podman scans by default.
-
-After the container starts, pithos reads the live nftables table back from
-the session's network namespace (`podman unshare nsenter ... nft list table
-inet pithos-egress`). If the private range drops are missing the hook never
-ran and the session is stopped immediately. When `block_private` is disabled
-there is no observable contract to verify, and the check is skipped.
+Rules load automatically before your harness starts; sessions refuse to boot
+if enforcement cannot be established.
 
 ### Audio
 

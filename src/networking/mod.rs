@@ -1,16 +1,20 @@
 pub(crate) mod enforcement;
-pub(crate) mod hook;
 
 use eyre::Result;
+use std::fs;
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
-use std::process::Command;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use crate::config::Networking;
 
-pub(crate) use hook::append_oci_hooks_args;
-
 pub(crate) const TABLE: &str = "pithos-egress";
 pub(crate) const QUOTA_NAME: &str = "global_egress";
+
+/// Environment variable carrying the rendered nftables ruleset into the
+/// container, where its entrypoint loads it before dropping privileges.
+pub(crate) const RULES_ENV: &str = "PITHOS_EGRESS_RULES";
 
 /// Private IPv4 ranges that must be dropped while `block_private` is set:
 /// the three RFC1918 blocks plus IPv4 link-local (RFC3927).
@@ -92,12 +96,12 @@ impl Networking {
     }
 
     #[tracing::instrument(skip(self, command))]
-    pub(crate) fn apply_to(&self, command: &mut Command) -> Result<()> {
+    pub(crate) fn apply_to(&self, command: &mut std::process::Command) -> Result<()> {
         if !self.enabled {
             tracing::debug!("networking disabled by configuration; skipping egress rules");
             return Ok(());
         }
-        hook::verify_networking_support()?;
+        remove_legacy_hook_install();
         let hosts = self.effective_whitelist();
         let (v4, v6) = resolve_hosts(&hosts);
         let rules = serialize_rules(&self.render_rules(&v4, &v6));
@@ -106,17 +110,33 @@ impl Networking {
             v4_addresses = v4.len(),
             v6_addresses = v6.len(),
             rules_bytes = rules.len(),
-            "applying egress networking rules"
+            "delivering egress networking rules to the container entrypoint"
         );
-        command.args(["--annotation", "pithos.networking=1"]);
-        command.args(["--annotation", &format!("pithos.networking-rules={rules}")]);
+        command.env(RULES_ENV, &rules);
         Ok(())
     }
 }
 
+/// Removes hook files written by older pithos versions that loaded rules
+/// through OCI hooks on the host. Best effort: leftovers only cause
+/// confusion, not harm.
+fn remove_legacy_hook_install() {
+    if let Some(dir) = dirs::data_local_dir() {
+        let _ = fs::remove_dir_all(dir.join("pithos").join("hooks.d"));
+    }
+    if let Some(dir) = dirs::config_dir() {
+        let _ = fs::remove_file(
+            dir.join("containers")
+                .join("oci")
+                .join("hooks.d")
+                .join("pithos-egress-cap.json"),
+        );
+    }
+}
+
 /// Renders a pretty multi-line nft ruleset as a single line with no double
-/// quotes, so it can be embedded in an OCI annotation value and extracted by
-/// the hook regardless of which filesystem the hook runs on.
+/// quotes, so it can travel through an environment variable into the
+/// container entrypoint regardless of which filesystem it runs on.
 ///
 /// Statements are `;`-terminated; opening braces are kept bare because the
 /// following statement supplies the separator, while closing braces are
@@ -138,24 +158,57 @@ pub(crate) fn serialize_rules(rules: &str) -> String {
     statements.join(" ")
 }
 
+/// Wall-clock budget for resolving the whole whitelist. Every host resolves
+/// on its own thread, so a slow or unreachable resolver costs this ceiling
+/// once instead of once per host.
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
+
 pub(crate) fn resolve_hosts(hosts: &[String]) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
+    let started = Instant::now();
+    let (tx, rx) = mpsc::channel::<(String, io::Result<Vec<SocketAddr>>)>();
+    for host in hosts {
+        let tx = tx.clone();
+        let host = host.clone();
+        std::thread::spawn(move || {
+            let addrs = (host.as_str(), 443).to_socket_addrs().map(|addrs| {
+                // Collect eagerly so resolution happens on this thread
+                // rather than lazily after it detaches.
+                addrs.collect::<Vec<SocketAddr>>()
+            });
+            let _ = tx.send((host, addrs));
+        });
+    }
+    drop(tx);
     let mut v4 = Vec::new();
     let mut v6 = Vec::new();
-    for host in hosts {
-        let addrs = match (host.as_str(), 443).to_socket_addrs() {
-            Ok(addrs) => addrs.collect::<Vec<SocketAddr>>(),
-            Err(_) => {
-                eprintln!("warning: cannot resolve whitelist host {host}, skipping");
-                continue;
+    for _ in 0..hosts.len() {
+        let remaining = RESOLVE_TIMEOUT.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(remaining) {
+            Ok((host, Ok(addrs))) => {
+                tracing::trace!(host, addresses = addrs.len(), "resolved whitelist host");
+                for addr in addrs {
+                    match addr.ip() {
+                        IpAddr::V4(ip) => v4.push(ip),
+                        IpAddr::V6(ip) => v6.push(ip),
+                    }
+                }
             }
-        };
-        tracing::trace!(host, addresses = addrs.len(), "resolved whitelist host");
-        for addr in addrs {
-            match addr.ip() {
-                IpAddr::V4(ip) => v4.push(ip),
-                IpAddr::V6(ip) => v6.push(ip),
+            Ok((host, Err(_))) => {
+                eprintln!("warning: cannot resolve whitelist host {host}, skipping");
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                break;
             }
         }
+    }
+    if started.elapsed() >= RESOLVE_TIMEOUT {
+        tracing::warn!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "whitelist resolution hit its time budget; unresolved hosts are skipped"
+        );
     }
     v4.sort_unstable();
     v4.dedup();
@@ -175,6 +228,18 @@ fn render_addr_list(addrs: &[impl std::fmt::Display]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolves_localhost_and_skips_unknown_hosts() {
+        let (v4, _v6) = resolve_hosts(&[
+            "localhost".to_string(),
+            "pithos-does-not-exist.example".to_string(),
+        ]);
+        assert!(
+            v4.contains(&Ipv4Addr::LOCALHOST),
+            "expected localhost in {v4:?}"
+        );
+    }
 
     #[test]
     fn rendered_rules_cover_every_private_range() {

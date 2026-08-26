@@ -1,11 +1,10 @@
 //! Post-start verification that egress rules are actually enforced.
 //!
-//! The nftables ruleset is loaded by an OCI hook outside pithos' control, and
-//! podman can silently skip hooks it does not know about. After the container
-//! starts, pithos reads the live ruleset from its network namespace through
-//! the same `podman unshare` path the hook itself uses. A table without the
-//! private range drops means the hook never ran, and the session is killed
-//! instead of running unprotected.
+//! The ruleset is loaded by the container's own entrypoint, so a missing
+//! table means the init phase failed. After the container starts, pithos
+//! reads the live table back with a plain `podman exec`. A table without the
+//! private range drops means the rules never loaded, and the session is
+//! killed instead of running unprotected.
 //!
 //! The check runs once on a fire-and-forget thread: it is bounded by the
 //! startup poll timeout plus a single nft query, and being abandoned at
@@ -47,11 +46,11 @@ pub(crate) fn spawn_check(networking: &Networking, container_name: String) {
 }
 
 fn check(container_name: String) {
-    let Some(pid) = wait_for_pid(&container_name) else {
+    if wait_until_running(&container_name).is_none() {
         tracing::debug!("container vanished or did not start; skipping enforcement check");
         return;
     };
-    match verdict(&pid) {
+    match verdict(&container_name) {
         Verdict::Compliant => {
             tracing::info!("egress enforcement verified inside the sandbox netns");
         }
@@ -65,8 +64,7 @@ fn check(container_name: String) {
             tracing::error!(
                 container = %container_name,
                 "egress rules are not enforced while block_private is configured; most likely \
-                 podman never invoked the OCI hook; debug with 'podman --log-level=debug run \
-                 --rm alpine true 2>&1 | grep -i hook'; stopping the session; bypass \
+                 the container entrypoint failed to load them; stopping the session; bypass \
                  deliberately with [networking] enabled = false"
             );
             let _ = Command::new("podman")
@@ -76,10 +74,10 @@ fn check(container_name: String) {
     }
 }
 
-/// Blocks until the container reports `running`, then returns its pid.
-/// Each poll is a single podman invocation so startup is not slowed by the
-/// background checker competing for the podman socket.
-fn wait_for_pid(container_name: &str) -> Option<String> {
+/// Blocks until the container reports `running`. Each poll is a single podman
+/// invocation so startup is not slowed by the background checker competing
+/// for the podman socket.
+fn wait_until_running(container_name: &str) -> Option<String> {
     let deadline = std::time::Instant::now() + STARTUP_TIMEOUT;
     loop {
         match poll_state(container_name) {
@@ -129,10 +127,16 @@ fn inspect_state(container_name: &str, format: &str) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-fn verdict(pid: &str) -> Verdict {
+fn verdict(container_name: &str) -> Verdict {
     let output = Command::new("podman")
         .args([
-            "unshare", "nsenter", "-t", pid, "-n", "nft", "list", "table", "inet", TABLE,
+            "exec",
+            container_name,
+            "nft",
+            "list",
+            "table",
+            "inet",
+            TABLE,
         ])
         .output();
     match output {

@@ -10,16 +10,6 @@ use crate::sandbox::{TempDir, apply_tree, copy_tree, has_changes, sweep_orphans}
 use crate::session;
 use crate::session::git;
 
-/// First arguments of the `podman run` invocation: explicit OCI hook
-/// directories (a no-op where remote clients cannot take them), then the
-/// subcommand itself.
-fn run_arg_prefix() -> Vec<String> {
-    let mut prefix = Vec::new();
-    crate::networking::append_oci_hooks_args(&mut prefix);
-    prefix.push("run".to_string());
-    prefix
-}
-
 pub(crate) fn run(
     config_path: Option<&Path>,
     toolchain: Option<String>,
@@ -57,7 +47,6 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
     let PreparedSession {
         sandbox,
         record,
-        current_user,
         uid,
         gid,
         unmanaged_paths,
@@ -69,7 +58,7 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
         sandbox.path().display()
     );
     let mut command = Command::new("podman");
-    command.args(run_arg_prefix());
+    command.arg("run");
     command.args([
         "--rm",
         "--interactive",
@@ -77,32 +66,35 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
         "--read-only",
         "--pull=never",
         "--cap-drop=ALL",
+        "--cap-add=SETUID",
+        "--cap-add=SETGID",
+        "--cap-add=SETPCAP",
         "--security-opt=no-new-privileges",
         "--userns=keep-id",
         "--name",
         &record.container_name,
     ]);
+    if config.networking.enabled {
+        command.args(["--cap-add=NET_ADMIN"]);
+    }
     command.args([
         "--volume",
         &format!("{}:{}:rw,Z", sandbox.path().display(), config.workspace),
     ]);
     command.args(["--workdir", &config.workspace]);
-    command.args([
-        "--tmpfs",
-        &crate::harness::tmpfs_spec("/tmp"),
-        "--user",
-        &current_user,
-    ]);
+    command.args(["--tmpfs", &crate::harness::tmpfs_spec("/tmp")]);
     let runtime_dir = format!("/run/user/{uid}");
     command.args([
-        "--mount",
-        &crate::harness::owned_tmpfs_spec(crate::agent::AGENT_HOME),
+        "--tmpfs",
+        &crate::harness::tmpfs_spec(crate::agent::AGENT_HOME),
     ]);
-    command.args(["--mount", &crate::harness::owned_tmpfs_spec(&runtime_dir)]);
+    command.args(["--tmpfs", &crate::harness::tmpfs_spec(&runtime_dir)]);
     for (key, value) in &config.environment {
         command.args(["--env", &format!("{key}={value}")]);
     }
     command.args(["--env", &format!("HOME={}", crate::agent::AGENT_HOME)]);
+    command.args(["--env", &format!("{}={uid}", crate::agent::AGENT_UID_ENV)]);
+    command.args(["--env", &format!("{}={gid}", crate::agent::AGENT_GID_ENV)]);
     if !config.environment.contains_key("XDG_RUNTIME_DIR") {
         command.args(["--env", &format!("XDG_RUNTIME_DIR={runtime_dir}")]);
     }
@@ -112,9 +104,7 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
         }
     }
     if !config.environment.contains_key("PATH") {
-        command.args(["--env-merge", &format!(
-            "PATH=/home/agent/.local/share/mise/shims:/home/agent/.cargo/bin:/home/agent/.local/bin:${{PATH}}"
-        )]);
+        command.args(["--env-merge", "PATH=/home/agent/.local/share/mise/shims:/home/agent/.cargo/bin:/home/agent/.local/bin:${PATH}"]);
     }
     for (key, value) in config.harness.environment() {
         command.args(["--env", &format!("{key}={value}")]);
@@ -194,7 +184,6 @@ fn strip_remotes(repository: &Path) -> Result<()> {
 struct PreparedSession {
     sandbox: TempDir,
     record: registry::SessionRecord,
-    current_user: String,
     uid: u32,
     gid: u32,
     unmanaged_paths: Vec<String>,
@@ -276,7 +265,6 @@ fn prepare_workspace(config: &Config, repository: &Path) -> Result<PreparedSessi
     Ok(PreparedSession {
         sandbox,
         record,
-        current_user,
         uid,
         gid,
         unmanaged_paths,
@@ -302,22 +290,6 @@ fn live_tier_env() -> [(&'static str, String); 2] {
 mod tests {
     use super::*;
     use crate::session::git_ok;
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    #[test]
-    fn hook_dirs_are_passed_before_the_run_subcommand() {
-        let prefix = run_arg_prefix();
-        assert_eq!(prefix.last().map(String::as_str), Some("run"));
-        assert!(!prefix.is_empty());
-        assert_eq!(prefix.first().map(String::as_str), Some("--hooks-dir"));
-        let hook_dir_count = prefix.iter().filter(|arg| *arg == "--hooks-dir").count();
-        assert_eq!(hook_dir_count, 3);
-        assert!(
-            prefix[..prefix.len() - 1]
-                .chunks(2)
-                .all(|pair| pair[0] == "--hooks-dir" && !pair[1].is_empty())
-        );
-    }
 
     #[test]
     fn strip_remotes_removes_all_remotes() {

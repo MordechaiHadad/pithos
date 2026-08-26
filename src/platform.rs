@@ -6,6 +6,7 @@
 
 #[cfg(any(windows, target_os = "macos"))]
 use eyre::Result;
+#[cfg(windows)]
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -164,42 +165,10 @@ fn run_shell_impl(command: &str) -> io::Result<std::process::ExitStatus> {
         .status()
 }
 
-#[cfg(unix)]
-pub(crate) fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    fs::metadata(path)
-        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-/// Verifies the host (or podman machine) is ready for pithos networking:
-/// the OCI hook is registered, its script is executable, and nft is present.
-#[cfg(any(windows, target_os = "macos"))]
-pub(crate) fn machine_ssh(script: &str) -> Result<std::process::Output> {
-    use eyre::WrapErr;
-    use std::io::Write;
-    tracing::debug!(script, "running podman machine ssh");
-    let mut child = std::process::Command::new("podman")
-        .args(["machine", "ssh", "sh", "-s"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .wrap_err("could not run `podman machine ssh`; start the podman machine first")?;
-    child
-        .stdin
-        .take()
-        .expect("stdin is configured")
-        .write_all(script.as_bytes())
-        .wrap_err("could not send the probe script to the podman machine")?;
-    child
-        .wait_with_output()
-        .wrap_err("podman machine ssh failed")
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::fs;
 
     use crate::sandbox::TempDir;
 

@@ -7,6 +7,11 @@ use crate::agent::{AGENT_HOME, AGENT_USER};
 use crate::config::{Config, Download, ToolchainDef, UvTool};
 use crate::sandbox::TempDir;
 
+/// Container entrypoint that loads session egress rules into the network
+/// namespace before dropping to the unprivileged agent identity.
+const INIT_SCRIPT: &str = include_str!("../host/pithos-init.sh");
+const INIT_PATH: &str = "/usr/local/bin/pithos-init";
+
 impl Config {
     #[tracing::instrument(skip(self), fields(image_tag = %self.image_tag()))]
     pub(crate) fn build_image(&self) -> Result<()> {
@@ -15,6 +20,8 @@ impl Config {
         tracing::debug!(config_digest, "building image");
         fs::write(context.path().join("Containerfile"), self.containerfile()?)
             .wrap_err("cannot write Containerfile")?;
+        fs::write(context.path().join("pithos-init"), INIT_SCRIPT)
+            .wrap_err("cannot write pithos-init")?;
         let status = Command::new("podman")
             .args([
                 "build",
@@ -66,9 +73,15 @@ impl Config {
 
     fn containerfile(&self) -> Result<String> {
         let mut output = format!("FROM {}\nWORKDIR {}\n", self.base_image, self.workspace);
+        output.push_str("USER root\n");
         output.push_str(&agent_preamble());
         output.push_str(&self.harness.install());
         let mut packages = self.install.clone();
+        if !packages.iter().any(|package| package == "nftables") {
+            // Appended last so the default install list keeps its declared
+            // order; duplicates are impossible without resorting.
+            packages.push("nftables".to_string());
+        }
         if self.audio {
             packages.extend(["libasound2", "libpulse0"].map(str::to_string));
             packages.sort();
@@ -135,8 +148,16 @@ impl Config {
         for download in &self.downloads {
             output.push_str(&format!("RUN {}\n", download.command()));
         }
+        output.push_str(&format!(
+            "LABEL pithos.init={}\n",
+            content_digest(INIT_SCRIPT)
+        ));
+        output.push_str(&format!(
+            "COPY pithos-init {INIT_PATH}\nRUN chmod 755 {INIT_PATH}\n"
+        ));
         output.push_str(&agent_epilogue());
         output.push_str("RUN chmod -R a+rwX /tmp\n");
+        output.push_str(&format!("ENTRYPOINT [\"{INIT_PATH}\"]\n"));
         output.push_str("CMD ");
         output.push_str(&json_command(self.harness.command()));
         output.push('\n');
@@ -288,6 +309,16 @@ fn install_line(prefix: &str, suffix: &str, items: &[String]) -> Option<String> 
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Stable short hash of an embedded file's content so the image digest
+/// changes whenever baked scripts change, even when the Containerfile text
+/// itself does not.
+fn content_digest(content: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 fn json_command(command: &[String]) -> String {
@@ -910,5 +941,42 @@ mod tests {
 
         let plain: Config = toml::from_str("[harness]\nname = \"opencode\"").unwrap();
         assert!(!plain.rendered().contains("libpulse0"));
+    }
+
+    #[test]
+    fn entrypoint_bakes_init_script_and_nftables() {
+        let config: Config = toml::from_str("[harness]\nname = \"opencode\"").unwrap();
+        let file = config.rendered();
+        assert!(file.contains("USER root\n"));
+        assert!(file.contains("'nftables'\n") || file.contains("'nftables' "));
+        assert!(file.contains("LABEL pithos.init="));
+        assert!(file.contains("COPY pithos-init /usr/local/bin/pithos-init\n"));
+        assert!(file.contains("RUN chmod 755 /usr/local/bin/pithos-init\n"));
+        assert!(file.contains("ENTRYPOINT [\"/usr/local/bin/pithos-init\"]\n"));
+        let label = file.find("LABEL pithos.init=").unwrap();
+        let copy = file.find("COPY pithos-init").unwrap();
+        let epilogue = file.find("RUN find /usr").unwrap();
+        assert!(label < copy && copy < epilogue);
+    }
+
+    #[test]
+    fn image_digest_tracks_init_script_content() {
+        let config: Config = toml::from_str("[harness]\nname = \"opencode\"").unwrap();
+        let file = config.rendered();
+        let prefix = "LABEL pithos.init=";
+        let start = file.find(prefix).unwrap() + prefix.len();
+        let baked_hash = &file[start..start + 16];
+        assert_eq!(baked_hash, content_digest(INIT_SCRIPT));
+    }
+
+    #[test]
+    fn embedded_init_script_loads_rules_then_drops_to_agent() {
+        assert!(INIT_SCRIPT.contains("PITHOS_EGRESS_RULES"));
+        assert!(INIT_SCRIPT.contains("-f \"$rules_file\""));
+        assert!(INIT_SCRIPT.contains("PITHOS_AGENT_UID"));
+        assert!(INIT_SCRIPT.contains("setpriv"));
+        assert!(INIT_SCRIPT.contains("--clear-groups"));
+        assert!(INIT_SCRIPT.contains("--bounding-set=-all"));
+        assert!(INIT_SCRIPT.starts_with("#!/bin/sh\n"));
     }
 }
