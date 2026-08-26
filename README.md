@@ -183,11 +183,17 @@ harness builds into its own image namespace. Set it explicitly to override.
 `workspace` is the absolute path used as the working directory inside the
 container. It defaults to `/workspace`.
 
-The agent home is a private writable volume: podman seeds it from the image
-content at session start, so package managers work with their default cache
-locations (`~/.cargo`, `~/.npm`, `~/.cache`, ...) and no environment overrides
-are needed. The root filesystem stays read-only, and the home contents are
-discarded when the container exits.
+The root filesystem is mounted read-only, and `/usr`, `/etc`, and friends are
+additionally stripped of directory write bits at build time. Baked toolchains
+live under `/usr/local/share/mise` and are used in place — nothing is copied
+when a session starts. The agent home is an ephemeral tmpfs: fully writable,
+starts clean every session, and everything in it (including runtime-installed
+tools) is discarded when the container exits. Tool state that should survive —
+harness databases, credentials, history — is mounted explicitly; see the
+harness sections below.
+
+Sessions refuse to start when invoked as the root host user: a non-root agent
+combined with dropped capabilities is what keeps system paths untouchable.
 
 `install` is a list of Debian packages installed with `apt-get`. It defaults to
 `["git", "gcc", "libc6-dev", "ncurses-term"]`. The terminfo database shipped by

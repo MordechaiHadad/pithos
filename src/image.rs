@@ -104,9 +104,11 @@ impl Config {
         let mut mise_tools = self.mise.clone();
         mise_tools.extend(providers);
         if !mise_tools.is_empty() || wanted.iter().any(|name| !defs[name].mise.is_empty()) {
-            output.push_str(&format!(
-                "ENV PATH={AGENT_HOME}/.local/share/mise/shims:$PATH\n"
-            ));
+            // cargo/bin precedes the shims so rust tools exec their real
+            // proxies directly, immune to mise config reconciliation.
+            output.push_str(
+                "ENV MISE_DATA_DIR=/usr/local/share/mise RUSTUP_HOME=/usr/local/share/mise/rustup CARGO_HOME=/usr/local/share/mise/cargo PATH=/usr/local/share/mise/cargo/bin:/usr/local/share/mise/shims:$PATH\n",
+            );
         }
         if !self.uv.is_empty() || wanted.iter().any(|name| !defs[name].uv.is_empty()) {
             output.push_str("ENV UV_TOOL_BIN_DIR=/usr/local/bin\n");
@@ -118,7 +120,7 @@ impl Config {
         if let Some(line) = mise_install_lines(&mise_tools) {
             output.push_str(&line);
         }
-        if let Some(line) = install_line("cargo install --root /usr/local", "", &self.cargo) {
+        if let Some(line) = install_line("cargo install", "", &self.cargo) {
             output.push_str(&line);
         }
         if let Some(line) = install_line("npm install --global", "", &self.npm) {
@@ -133,7 +135,6 @@ impl Config {
         for download in &self.downloads {
             output.push_str(&format!("RUN {}\n", download.command()));
         }
-        output.push_str(&agent_home_cleanup());
         output.push_str(&agent_epilogue());
         output.push_str("RUN chmod -R a+rwX /tmp\n");
         output.push_str("CMD ");
@@ -173,7 +174,7 @@ impl ToolchainDef {
                 block.push_str(&format!("RUN {command}\n"));
             }
         }
-        if let Some(line) = install_line("cargo install --root /usr/local", "", &self.cargo) {
+        if let Some(line) = install_line("cargo install", "", &self.cargo) {
             block.push_str(&line);
         }
         if let Some(line) = install_line("npm install --global", "", &self.npm) {
@@ -200,8 +201,7 @@ fn agent_preamble() -> String {
     let uid = crate::platform::current_uid();
     let gid = crate::platform::current_gid();
     let mut preamble = format!(
-        "RUN mkdir -p {} && (useradd -o -m -d {} -u {uid} -g {gid} -s /bin/sh {} || true)\n",
-        shell_quote(AGENT_HOME),
+        "RUN useradd -o -m -d {} -u {uid} -g {gid} -s /bin/sh {} || true\n",
         shell_quote(AGENT_HOME),
         shell_quote(AGENT_USER),
     );
@@ -212,26 +212,17 @@ fn agent_preamble() -> String {
 fn agent_epilogue() -> String {
     let uid = crate::platform::current_uid();
     let gid = crate::platform::current_gid();
-    format!("RUN chown -R {uid}:{gid} {}\n", shell_quote(AGENT_HOME))
-}
-
-/// Removes package-manager caches from the agent home before it is chowned.
-///
-/// Build steps run with HOME set to the agent home, so cargo, npm, and uv
-/// leave their download and registry caches there, and mise keeps its
-/// installs and shims under `.local/share/mise`. The runtime mounts the
-/// agent home as an anonymous volume that podman seeds from the image on
-/// every session start, so caches left here would be copied again each boot.
-/// Tool binaries under `.local/share/mise` and uv tool environments under
-/// `.local/share` are intentionally kept.
-fn agent_home_cleanup() -> String {
-    let caches = [".cargo", ".npm", ".cache", ".rustup"];
-    let paths = caches
-        .iter()
-        .map(|cache| shell_quote(&format!("{AGENT_HOME}/{cache}")))
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!("RUN rm -rf {paths}\n")
+    let mut epilogue = String::from(
+        // System trees stay kernel-read-only through --read-only at runtime;
+        // stripping directory write bits also blocks create/unlink for any
+        // process that somehow gains write access to the layer beneath.
+        "RUN find /usr /bin /sbin /lib /etc -type d -exec chmod 555 {} + 2>/dev/null || true\n",
+    );
+    epilogue.push_str(&format!(
+        "RUN chown -R {uid}:{gid} {}\n",
+        shell_quote(AGENT_HOME)
+    ));
+    epilogue
 }
 
 fn uv_install_lines(tool: &UvTool) -> String {
@@ -386,14 +377,14 @@ mod tests {
     #[test]
     fn cargo_block_bootstraps_rust_via_mise() {
         let file = Config::with_cargo().rendered();
-        assert!(file.contains("RUN cargo install --root /usr/local 'just'\n"));
+        assert!(file.contains("RUN cargo install 'just'\n"));
         let mise = file.find("(command -v mise").unwrap();
         let rust = file.find("mise use -g --yes 'rust'\n").unwrap();
-        let install = file
-            .find("RUN cargo install --root /usr/local 'just'\n")
-            .unwrap();
+        let install = file.find("RUN cargo install 'just'\n").unwrap();
         assert!(mise < rust && rust < install);
-        assert!(file.contains("ENV PATH=/home/agent/.local/share/mise/shims:$PATH\n"));
+        assert!(file.contains(
+            "ENV MISE_DATA_DIR=/usr/local/share/mise RUSTUP_HOME=/usr/local/share/mise/rustup CARGO_HOME=/usr/local/share/mise/cargo PATH=/usr/local/share/mise/cargo/bin:/usr/local/share/mise/shims:$PATH\n"
+        ));
         assert!(file.contains("apt-get install -y --no-install-recommends 'git' 'gcc'"));
     }
 
@@ -404,12 +395,12 @@ mod tests {
         let gid = crate::platform::current_gid();
         assert!(
             file.contains(&format!(
-                "RUN mkdir -p '/home/agent' && (useradd -o -m -d '/home/agent' -u {uid} -g {gid} -s /bin/sh 'agent' || true)\n"
+                "RUN useradd -o -m -d '/home/agent' -u {uid} -g {gid} -s /bin/sh 'agent' || true\n"
             )),
             "preamble missing: {file}"
         );
         assert!(file.contains("ENV HOME=/home/agent\n"));
-        assert!(file.contains("RUN cargo install --root /usr/local 'just'\n"));
+        assert!(file.contains("RUN cargo install 'just'\n"));
         assert!(file.contains(&format!("RUN chown -R {uid}:{gid} '/home/agent'\n")));
         let chown = file
             .find(&format!("RUN chown -R {uid}:{gid} '/home/agent'\n"))
@@ -418,20 +409,22 @@ mod tests {
     }
 
     #[test]
-    fn package_manager_caches_are_removed_before_the_home_is_chowned() {
+    fn system_dirs_are_locked_down_and_home_is_never_scrubbed() {
         let file = Config::with_uv().rendered();
         assert!(file.contains(
-            "RUN rm -rf '/home/agent/.cargo' '/home/agent/.npm' '/home/agent/.cache' '/home/agent/.rustup'\n"
+            "RUN find /usr /bin /sbin /lib /etc -type d -exec chmod 555 {} + 2>/dev/null || true\n"
         ));
+        assert!(!file.contains("rm -rf '/home/agent"));
         let last_install = file.find("RUN uv tool install 'plain-tool'\n").unwrap();
-        let cleanup = file.find("RUN rm -rf '/home/agent/.cargo'").unwrap();
+        let hardening = file
+            .find("RUN find /usr /bin /sbin /lib /etc -type d -exec chmod 555")
+            .unwrap();
         let uid = crate::platform::current_uid();
         let gid = crate::platform::current_gid();
         let chown = file
             .find(&format!("RUN chown -R {uid}:{gid} '/home/agent'\n"))
             .unwrap();
-        assert!(last_install < cleanup && cleanup < chown);
-        assert!(file.contains("ENV PATH=/home/agent/.local/share/mise/shims:$PATH"));
+        assert!(last_install < hardening && hardening < chown);
     }
 
     #[test]
@@ -453,9 +446,7 @@ mod tests {
         assert!(file.contains("ENV UV_TOOL_BIN_DIR=/usr/local/bin\n"));
         let mise = file.find("mise use -g --yes 'deno'").unwrap();
         let uv_env = file.find("ENV UV_TOOL_BIN_DIR=/usr/local/bin\n").unwrap();
-        let cargo = file
-            .find("RUN cargo install --root /usr/local 'just'\n")
-            .unwrap();
+        let cargo = file.find("RUN cargo install 'just'\n").unwrap();
         let bun = file.find("RUN bun install --global 'htmx'\n").unwrap();
         let uv_install = file.find("RUN uv tool install 'serena-agent'").unwrap();
         assert!(mise < cargo);
@@ -481,9 +472,7 @@ mod tests {
         .unwrap();
         let file = config.rendered();
         let rust = file.find("mise use -g --yes 'rust'\n").unwrap();
-        let install = file
-            .find("RUN cargo install --root /usr/local 'just'\n")
-            .unwrap();
+        let install = file.find("RUN cargo install 'just'\n").unwrap();
         assert!(rust < install);
     }
 
@@ -499,7 +488,9 @@ mod tests {
         )
         .unwrap();
         let file = config.rendered();
-        assert!(file.contains("ENV PATH=/home/agent/.local/share/mise/shims:$PATH"));
+        assert!(file.contains(
+            "ENV MISE_DATA_DIR=/usr/local/share/mise RUSTUP_HOME=/usr/local/share/mise/rustup CARGO_HOME=/usr/local/share/mise/cargo PATH=/usr/local/share/mise/cargo/bin:/usr/local/share/mise/shims:$PATH"
+        ));
         assert!(file.contains("(command -v mise >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/* && curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh)) && mise use -g --yes 'neovim' 'lua-language-server'\n"));
     }
 
@@ -694,7 +685,9 @@ mod tests {
         .unwrap();
         let file = config.rendered();
         assert!(file.contains("mise use -g --yes 'python' 'uv'\n"));
-        assert!(file.contains("ENV PATH=/home/agent/.local/share/mise/shims:$PATH"));
+        assert!(file.contains(
+            "ENV MISE_DATA_DIR=/usr/local/share/mise RUSTUP_HOME=/usr/local/share/mise/rustup CARGO_HOME=/usr/local/share/mise/cargo PATH=/usr/local/share/mise/cargo/bin:/usr/local/share/mise/shims:$PATH"
+        ));
         assert!(
             file.contains("RUN uv tool install 'serena-agent' --python '3.13'\nRUN serena init")
         );

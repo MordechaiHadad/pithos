@@ -30,6 +30,12 @@ pub(crate) fn run(
     if !repository.join(".git").exists() {
         eyre::bail!("current directory is not a git repository")
     }
+    if crate::platform::current_uid() == 0 {
+        eyre::bail!(
+            "pithos sessions require a non-root host user; running as root would leave \
+             system paths writable inside the sandbox"
+        );
+    }
     let load_started = Instant::now();
     let config = Config::load(config_path, toolchain)?;
     tracing::debug!(
@@ -52,6 +58,8 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
         sandbox,
         record,
         current_user,
+        uid,
+        gid,
         unmanaged_paths,
     } = prepared;
     println!(
@@ -85,11 +93,29 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
         "--user",
         &current_user,
     ]);
-    command.args(["--volume", crate::agent::AGENT_HOME]);
+    let runtime_dir = format!("/run/user/{uid}");
+    command.args([
+        "--mount",
+        &crate::harness::owned_tmpfs_spec(crate::agent::AGENT_HOME),
+    ]);
+    command.args(["--mount", &crate::harness::owned_tmpfs_spec(&runtime_dir)]);
     for (key, value) in &config.environment {
         command.args(["--env", &format!("{key}={value}")]);
     }
     command.args(["--env", &format!("HOME={}", crate::agent::AGENT_HOME)]);
+    if !config.environment.contains_key("XDG_RUNTIME_DIR") {
+        command.args(["--env", &format!("XDG_RUNTIME_DIR={runtime_dir}")]);
+    }
+    for (key, value) in live_tier_env() {
+        if !config.environment.contains_key(key) {
+            command.args(["--env", &format!("{key}={value}")]);
+        }
+    }
+    if !config.environment.contains_key("PATH") {
+        command.args(["--env-merge", &format!(
+            "PATH=/home/agent/.local/share/mise/shims:/home/agent/.cargo/bin:/home/agent/.local/bin:${{PATH}}"
+        )]);
+    }
     for (key, value) in config.harness.environment() {
         command.args(["--env", &format!("{key}={value}")]);
     }
@@ -169,6 +195,8 @@ struct PreparedSession {
     sandbox: TempDir,
     record: registry::SessionRecord,
     current_user: String,
+    uid: u32,
+    gid: u32,
     unmanaged_paths: Vec<String>,
 }
 
@@ -226,11 +254,9 @@ fn prepare_workspace(config: &Config, repository: &Path) -> Result<PreparedSessi
         elapsed_ms = strip_started.elapsed().as_millis() as u64,
         "remotes stripped"
     );
-    let current_user = format!(
-        "{}:{}",
-        crate::platform::current_uid(),
-        crate::platform::current_gid()
-    );
+    let uid = crate::platform::current_uid();
+    let gid = crate::platform::current_gid();
+    let current_user = format!("{uid}:{gid}");
     let unmanaged_paths = session::unmanaged(config);
     let record = registry::SessionRecord::new(
         repository,
@@ -251,8 +277,25 @@ fn prepare_workspace(config: &Config, repository: &Path) -> Result<PreparedSessi
         sandbox,
         record,
         current_user,
+        uid,
+        gid,
         unmanaged_paths,
     })
+}
+
+/// Package-manager state redirected into the ephemeral home so runtime
+/// installs work and are discarded with the session. Toolchain *routers*
+/// (`MISE_DATA_DIR`, `RUSTUP_HOME`) deliberately stay pointed at the baked
+/// tree: mise shims and rustup proxies resolve through them at exec time,
+/// and both only read during normal operation.
+fn live_tier_env() -> [(&'static str, String); 2] {
+    [
+        ("CARGO_HOME", format!("{}/.cargo", crate::agent::AGENT_HOME)),
+        (
+            "NPM_CONFIG_PREFIX",
+            format!("{}/.local", crate::agent::AGENT_HOME),
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -308,5 +351,24 @@ mod tests {
         git_ok(repo.path(), &["init"]).unwrap();
 
         strip_remotes(repo.path()).unwrap();
+    }
+
+    #[test]
+    fn live_tier_env_redirects_writable_state_only() {
+        let home = crate::agent::AGENT_HOME;
+        let env: std::collections::BTreeMap<_, _> = live_tier_env().into_iter().collect();
+        assert_eq!(env.get("CARGO_HOME").unwrap(), &format!("{home}/.cargo"));
+        assert_eq!(
+            env.get("NPM_CONFIG_PREFIX").unwrap(),
+            &format!("{home}/.local")
+        );
+        assert!(
+            !env.contains_key("MISE_DATA_DIR"),
+            "shims resolve through the baked data dir"
+        );
+        assert!(
+            !env.contains_key("RUSTUP_HOME"),
+            "rustup proxies resolve through the baked toolchain root"
+        );
     }
 }
