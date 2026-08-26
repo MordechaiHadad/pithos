@@ -64,7 +64,6 @@ pub(crate) const DEFAULT_WHITELIST: &[&str] = &[
     "api.search.brave.com",
     "google.serper.dev",
     "api.anthropic.com",
-    "statsig.anthropic.com",
 ];
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -1009,7 +1008,6 @@ mod tests {
                 "api.search.brave.com",
                 "google.serper.dev",
                 "api.anthropic.com",
-                "statsig.anthropic.com",
             ]
         );
     }
