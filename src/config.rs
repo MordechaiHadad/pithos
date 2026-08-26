@@ -43,6 +43,10 @@ pub(crate) struct Config {
     pub(crate) ignore: Vec<String>,
     #[serde(default)]
     pub(crate) diff_viewer: Option<String>,
+    /// Forces a workspace population tier (`reflink`, `worktree` or `copy`)
+    /// instead of auto-detecting the fastest one the platform supports.
+    #[serde(default)]
+    pub(crate) copy_strategy: Option<String>,
     #[serde(default)]
     pub(crate) networking: Networking,
     #[serde(default)]

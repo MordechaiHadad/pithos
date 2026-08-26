@@ -408,6 +408,14 @@ edit = "allow"
 `diff_viewer` is an optional command used to review changes. It must contain a
 `{dir}` placeholder, which is replaced with the temporary workspace path.
 
+`copy_strategy` forces the tier used to populate the session workspace:
+`reflink` (kernel-level copy-on-write clones), `worktree` (a shared-object git
+clone whose origin `.git/objects` is mounted read-only into the container), or
+`copy` (a plain tree copy). When unset or `"auto"`, pithos probes for reflink
+support first, falls back to the worktree tier on filesystems without
+copy-on-write support (for example ext4), and keeps the plain copy as a last
+resort.
+
 Setting `credentials = true` inside `[harness]` mounts harness authentication
 files read-only into the container.
 

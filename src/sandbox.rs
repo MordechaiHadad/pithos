@@ -3,6 +3,7 @@ use rayon::prelude::*;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 use tempfile::Builder;
@@ -78,7 +79,7 @@ pub(crate) fn sweep_orphans(live_sandboxes: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-fn temporary_base() -> Result<PathBuf> {
+pub(crate) fn temporary_base() -> Result<PathBuf> {
     let base = dirs::data_dir()
         .ok_or_else(|| eyre!("cannot determine data directory"))?
         .join("pithos")
@@ -121,7 +122,7 @@ impl CopyStats {
 }
 
 /// What [`copy_entry`] materialized for a single non-directory entry.
-enum CopiedEntry {
+pub(crate) enum CopiedEntry {
     File { bytes: u64, reflinked: bool },
     Symlink,
 }
@@ -170,7 +171,9 @@ fn copy_tree_at(
     }
     let file_entries = files
         .par_iter()
-        .map(|(source_path, destination_path)| copy_entry(source_path, destination_path))
+        .map(|(source_path, destination_path)| {
+            copy_entry(source_path, destination_path, DestinationSafety::Fresh)
+        })
         .collect::<Result<Vec<Option<CopiedEntry>>>>()?;
     for entry in file_entries.into_iter().flatten() {
         stats.record_entry(entry);
@@ -187,7 +190,23 @@ fn copy_tree_at(
     Ok(stats)
 }
 
-fn copy_entry(source: &Path, destination: &Path) -> Result<Option<CopiedEntry>> {
+/// Whether the directory holding `destination` has readers that must never
+/// observe partially written files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DestinationSafety {
+    /// A sandbox directory pithos created moments ago; nothing can be
+    /// watching it yet.
+    Fresh,
+    /// The user's live repository; files are replaced through an atomic
+    /// rename so concurrent readers only ever see whole contents.
+    Shared,
+}
+
+pub(crate) fn copy_entry(
+    source: &Path,
+    destination: &Path,
+    safety: DestinationSafety,
+) -> Result<Option<CopiedEntry>> {
     tracing::trace!(source = %source.display(), destination = %destination.display(), "copying entry");
     let metadata = fs::symlink_metadata(source)?;
     let file_type = metadata.file_type();
@@ -197,7 +216,10 @@ fn copy_entry(source: &Path, destination: &Path) -> Result<Option<CopiedEntry>> 
         Ok(Some(CopiedEntry::Symlink))
     } else if file_type.is_file() {
         let bytes = metadata.len();
-        let reflinked = atomic_copy(source, destination)?;
+        let reflinked = match safety {
+            DestinationSafety::Fresh => populate_copy(source, destination, &metadata)?,
+            DestinationSafety::Shared => apply_atomic_copy(source, destination, &metadata)?,
+        };
         Ok(Some(CopiedEntry::File { bytes, reflinked }))
     } else {
         eprintln!("warning: skipping special file {}", source.display());
@@ -205,18 +227,13 @@ fn copy_entry(source: &Path, destination: &Path) -> Result<Option<CopiedEntry>> 
     }
 }
 
-/// Copies `source` to `destination` through a temporary file so readers never
-/// observe partial content. Returns whether the copy was served by a
-/// filesystem-level clone; unsupported filesystems silently fall back to a
-/// byte copy.
-fn atomic_copy(source: &Path, destination: &Path) -> Result<bool> {
-    let file_name = destination
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-    let temp = destination.with_file_name(format!(".{file_name}.pithos-tmp"));
-    let _ = fs::remove_file(&temp);
-    let reflinked = match reflink_copy::reflink_or_copy(source, &temp) {
+/// Clones or copies straight onto the final name while populating a fresh
+/// workspace. Nothing reads the destination until population completes, and
+/// the reflink crate refuses to open existing files (`O_EXCL`), so this path
+/// can neither clobber foreign data nor expose partial content. Returns
+/// whether the copy was served by a filesystem-level clone.
+fn populate_copy(source: &Path, destination: &Path, metadata: &fs::Metadata) -> Result<bool> {
+    let reflinked = match reflink_copy::reflink_or_copy(source, destination) {
         Ok(None) => true,
         Ok(Some(_)) => false,
         Err(error) => {
@@ -225,11 +242,57 @@ fn atomic_copy(source: &Path, destination: &Path) -> Result<bool> {
                 %error,
                 "clone attempt failed; falling back to byte copy"
             );
-            fs::copy(source, &temp)?;
+            fs::copy(source, destination)?;
             false
         }
     };
-    fs::set_permissions(&temp, fs::metadata(source)?.permissions())?;
+    fs::set_permissions(destination, metadata.permissions())?;
+    Ok(reflinked)
+}
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn unique_temp_path(destination: &Path) -> PathBuf {
+    let file_name = destination
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    destination.with_file_name(format!(
+        ".{file_name}.{}-{sequence}.pithos-tmp",
+        std::process::id()
+    ))
+}
+
+/// Replaces an existing file in the user's repository through a temporary
+/// file and rename so readers never observe partial content. Temp names are
+/// unique per call: leftovers from crashed runs are left alone instead of
+/// being preemptively unlinked, and simultaneous applies to one repository
+/// cannot steal each other's staging file. Returns whether the copy was
+/// served by a filesystem-level clone.
+fn apply_atomic_copy(source: &Path, destination: &Path, metadata: &fs::Metadata) -> Result<bool> {
+    let mut temp = unique_temp_path(destination);
+    let reflinked = loop {
+        break match reflink_copy::reflink_or_copy(source, &temp) {
+            Ok(None) => true,
+            Ok(Some(_)) => false,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&temp);
+                temp = unique_temp_path(destination);
+                continue;
+            }
+            Err(error) => {
+                tracing::debug!(
+                    source = %source.display(),
+                    %error,
+                    "clone attempt failed; falling back to byte copy"
+                );
+                fs::copy(source, &temp)?;
+                false
+            }
+        };
+    };
+    fs::set_permissions(&temp, metadata.permissions())?;
     if let Err(error) = fs::rename(&temp, destination) {
         let _ = fs::remove_file(&temp);
         return Err(error.into());
@@ -265,7 +328,7 @@ fn is_excluded(relative: &Path, unmanaged: &[String]) -> bool {
         || matches_any(relative, unmanaged)
 }
 
-fn matches_any(relative: &Path, patterns: &[String]) -> bool {
+pub(crate) fn matches_any(relative: &Path, patterns: &[String]) -> bool {
     let components: Vec<_> = relative.components().map(|c| c.as_os_str()).collect();
     patterns.iter().any(|pattern| {
         let parts: Vec<_> = Path::new(pattern)
@@ -359,13 +422,13 @@ fn apply_tree_at(
             fs::create_dir_all(&destination_path)?;
             apply_tree_at(&source_path, &destination_path, &child_relative, unmanaged)?;
         } else {
-            let _ = copy_entry(&source_path, &destination_path)?;
+            let _ = copy_entry(&source_path, &destination_path, DestinationSafety::Shared)?;
         }
     }
     Ok(())
 }
 
-fn remove_path(path: &Path) -> Result<()> {
+pub(crate) fn remove_path(path: &Path) -> Result<()> {
     let file_type = fs::symlink_metadata(path)?.file_type();
     if file_type.is_symlink() || !file_type.is_dir() {
         fs::remove_file(path)?;
@@ -446,14 +509,19 @@ mod tests {
         }
     }
 
+    fn apply(source: &Path, destination: &Path) -> bool {
+        let metadata = fs::symlink_metadata(source).unwrap();
+        apply_atomic_copy(source, destination, &metadata).unwrap()
+    }
+
     #[test]
-    fn atomic_copy_isolates_writes_from_source() {
+    fn apply_atomic_copy_isolates_writes_from_source() {
         let dir = test_temp_dir("pithos-test-atomic-isolation");
         let source = dir.path().join("source.bin");
         let destination = dir.path().join("destination.bin");
         fs::write(&source, b"original").unwrap();
 
-        let _reflinked = atomic_copy(&source, &destination).unwrap();
+        let _reflinked = apply(&source, &destination);
 
         assert_eq!(fs::read(&destination).unwrap(), b"original");
         fs::write(&destination, b"mutated").unwrap();
@@ -462,7 +530,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn atomic_copy_propagates_permissions() {
+    fn apply_atomic_copy_propagates_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = test_temp_dir("pithos-test-atomic-permissions");
@@ -471,10 +539,75 @@ mod tests {
         fs::write(&source, b"data").unwrap();
         fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
 
-        atomic_copy(&source, &destination).unwrap();
+        apply(&source, &destination);
 
         let mode = fs::metadata(&destination).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn populate_copy_replaces_content_without_touching_the_source() {
+        let dir = test_temp_dir("pithos-test-populate-direct");
+        let source = dir.path().join("source.bin");
+        let destination = dir.path().join("nested").join("destination.bin");
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        fs::write(&source, b"payload").unwrap();
+
+        let _reflinked = populate_copy(
+            &source,
+            &destination,
+            &fs::symlink_metadata(&source).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"payload");
+        fs::write(&destination, b"mutated").unwrap();
+        assert_eq!(fs::read(&source).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn apply_atomic_copy_overwrites_existing_destination() {
+        let dir = test_temp_dir("pithos-test-apply-overwrite");
+        let source = dir.path().join("source.bin");
+        let destination = dir.path().join("destination.bin");
+        fs::write(&source, b"second version").unwrap();
+        fs::write(&destination, b"first version").unwrap();
+
+        apply(&source, &destination);
+
+        assert_eq!(fs::read(&destination).unwrap(), b"second version");
+    }
+
+    #[test]
+    fn apply_atomic_copy_never_deletes_foreign_temp_named_files() {
+        let dir = test_temp_dir("pithos-test-apply-foreign-temp");
+        let incoming = dir.path().join("incoming.txt");
+        let destination = dir.path().join("data.txt");
+        let legacy_temp = dir.path().join(".data.txt.pithos-tmp");
+        fs::write(&incoming, b"applied content").unwrap();
+        fs::write(&destination, b"old content").unwrap();
+        fs::write(&legacy_temp, b"precious user data").unwrap();
+
+        apply(&incoming, &destination);
+
+        assert_eq!(fs::read(&destination).unwrap(), b"applied content");
+        assert_eq!(
+            fs::read_to_string(&legacy_temp).unwrap(),
+            "precious user data"
+        );
+    }
+
+    #[test]
+    fn temp_paths_are_unique_across_calls() {
+        let dir = test_temp_dir("pithos-test-temp-uniqueness");
+        let destination = dir.path().join("file.txt");
+
+        let first = unique_temp_path(&destination);
+        let second = unique_temp_path(&destination);
+
+        assert_ne!(first, second);
+        assert!(first.starts_with(dir.path()));
+        assert!(first.to_string_lossy().ends_with(".pithos-tmp"));
     }
 
     #[test]

@@ -6,9 +6,10 @@ use std::time::Instant;
 
 use crate::config::Config;
 use crate::registry;
-use crate::sandbox::{TempDir, apply_tree, copy_tree, has_changes, sweep_orphans};
+use crate::sandbox::{TempDir, apply_tree, has_changes, sweep_orphans};
 use crate::session;
-use crate::session::git;
+use crate::session::strip_remotes;
+use crate::strategy::{CONTAINER_GIT_OBJECTS, CopyStrategy, parse_override, populate_sandbox};
 
 pub(crate) fn run(
     config_path: Option<&Path>,
@@ -32,21 +33,29 @@ pub(crate) fn run(
         elapsed_ms = load_started.elapsed().as_millis() as u64,
         "configuration loaded"
     );
+    let forced_strategy = parse_override(config.copy_strategy.as_deref())?;
     let sweep_started = Instant::now();
     sweep_orphans(&registry::sandbox_paths())?;
     tracing::debug!(
         elapsed_ms = sweep_started.elapsed().as_millis() as u64,
         "orphan sweep finished"
     );
-    run_session(&config, &repository, auto_yes, auto_no)
+    run_session(&config, &repository, forced_strategy, auto_yes, auto_no)
 }
 
 #[tracing::instrument(skip_all, fields(repository = %repository.display()))]
-fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool) -> Result<()> {
-    let prepared = prepare_session(config, repository)?;
+fn run_session(
+    config: &Config,
+    repository: &Path,
+    forced_strategy: Option<CopyStrategy>,
+    auto_yes: bool,
+    auto_no: bool,
+) -> Result<()> {
+    let prepared = prepare_session(config, repository, forced_strategy)?;
     let PreparedSession {
         sandbox,
         record,
+        strategy,
         uid,
         gid,
         unmanaged_paths,
@@ -81,6 +90,17 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
         "--volume",
         &format!("{}:{}:rw,Z", sandbox.path().display(), config.workspace),
     ]);
+    if strategy == CopyStrategy::Worktree {
+        let objects_dir = repository.join(".git").join("objects");
+        tracing::debug!(
+            volume = %objects_dir.display(),
+            "mounting origin git objects read-only for the worktree tier"
+        );
+        command.args([
+            "--volume",
+            &format!("{}:{CONTAINER_GIT_OBJECTS}:ro,Z", objects_dir.display()),
+        ]);
+    }
     command.args(["--workdir", &config.workspace]);
     command.args(["--tmpfs", &crate::harness::tmpfs_spec("/tmp")]);
     let runtime_dir = format!("/run/user/{uid}");
@@ -168,22 +188,12 @@ fn run_session(config: &Config, repository: &Path, auto_yes: bool, auto_no: bool
     Ok(())
 }
 
-fn strip_remotes(repository: &Path) -> Result<()> {
-    let output = git(repository, &["remote"])?;
-    for name in String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|name| !name.is_empty())
-    {
-        git(repository, &["remote", "remove", name])
-            .wrap_err_with(|| format!("could not remove remote {name}"))?;
-    }
-    Ok(())
-}
-
-/// Sandbox, session record, and runtime identity needed to start a container.
+/// Sandbox, session record, population tier, and runtime identity needed to
+/// start a container.
 struct PreparedSession {
     sandbox: TempDir,
     record: registry::SessionRecord,
+    strategy: CopyStrategy,
     uid: u32,
     gid: u32,
     unmanaged_paths: Vec<String>,
@@ -193,7 +203,11 @@ struct PreparedSession {
 /// parallel thread. The two steps touch disjoint state, so the workspace copy
 /// hides inside the image preparation window and both must succeed before a
 /// container starts.
-fn prepare_session(config: &Config, repository: &Path) -> Result<PreparedSession> {
+fn prepare_session(
+    config: &Config,
+    repository: &Path,
+    forced_strategy: Option<CopyStrategy>,
+) -> Result<PreparedSession> {
     let started = Instant::now();
     std::thread::scope(|scope| {
         let builder = scope.spawn(|| -> Result<()> {
@@ -213,7 +227,7 @@ fn prepare_session(config: &Config, repository: &Path) -> Result<PreparedSession
             }
             Ok(())
         });
-        let prepared = prepare_workspace(config, repository);
+        let prepared = prepare_workspace(config, repository, forced_strategy);
         match prepared {
             Ok(pair) => {
                 builder
@@ -234,9 +248,13 @@ fn prepare_session(config: &Config, repository: &Path) -> Result<PreparedSession
 }
 
 #[tracing::instrument(skip_all, fields(repository = %repository.display()))]
-fn prepare_workspace(config: &Config, repository: &Path) -> Result<PreparedSession> {
+fn prepare_workspace(
+    config: &Config,
+    repository: &Path,
+    forced_strategy: Option<CopyStrategy>,
+) -> Result<PreparedSession> {
     let sandbox = TempDir::create("pithos-workspace")?;
-    copy_tree(repository, sandbox.path(), &config.ignore)?;
+    let strategy = populate_sandbox(repository, sandbox.path(), &config.ignore, forced_strategy)?;
     let strip_started = Instant::now();
     strip_remotes(sandbox.path())?;
     tracing::debug!(
@@ -265,6 +283,7 @@ fn prepare_workspace(config: &Config, repository: &Path) -> Result<PreparedSessi
     Ok(PreparedSession {
         sandbox,
         record,
+        strategy,
         uid,
         gid,
         unmanaged_paths,
@@ -289,7 +308,7 @@ fn live_tier_env() -> [(&'static str, String); 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::git_ok;
+    use crate::session::{git, git_ok, strip_remotes};
 
     #[test]
     fn strip_remotes_removes_all_remotes() {
