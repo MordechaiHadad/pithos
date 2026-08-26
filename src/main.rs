@@ -146,15 +146,16 @@ fn spawn_signal_cleanup() {
 fn spawn_signal_cleanup() {}
 
 fn init_tracing(verbose: u8) {
+    let crate_name = env!("CARGO_CRATE_NAME");
     let env_filter = if verbose > 0 {
-        let crate_name = env!("CARGO_CRATE_NAME");
         match verbose {
             1 => EnvFilter::new(format!("{crate_name}=debug")),
             2 => EnvFilter::new(format!("{crate_name}=trace")),
             _ => EnvFilter::new("trace"),
         }
     } else {
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"))
+        EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(format!("warn,{crate_name}=info")))
     };
 
     tracing_subscriber::registry()

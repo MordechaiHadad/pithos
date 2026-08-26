@@ -2,6 +2,7 @@ use eyre::{Result, WrapErr, eyre};
 use std::env;
 use std::path::Path;
 use std::process::Command;
+use tracing::info;
 
 use crate::config::Config;
 use crate::registry;
@@ -60,7 +61,7 @@ fn run_session(
         unmanaged_paths,
         whitelist_addresses,
     } = prepared;
-    tracing::info!(
+    info!(
         "pithos session {}: inspect it live with `pithos shell {}` or open {} in your editor",
         record.id,
         record.id,
