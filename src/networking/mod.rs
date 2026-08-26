@@ -1,3 +1,4 @@
+pub(crate) mod cache;
 pub(crate) mod enforcement;
 
 use std::fs;
@@ -119,8 +120,64 @@ impl Networking {
             return (Vec::new(), Vec::new());
         }
         let hosts = self.effective_whitelist();
-        resolve_hosts(&hosts)
+        if let Some(entry) = cache::load(&hosts) {
+            let current_time = cache::now();
+            if entry.is_fresh(current_time) {
+                if entry.needs_refresh(current_time) {
+                    spawn_cache_refresh(hosts.clone());
+                }
+                tracing::debug!(
+                    age_secs = current_time.saturating_sub(entry.resolved_at),
+                    "network cache hit"
+                );
+                return split_addresses(&entry.addresses);
+            }
+            tracing::debug!(
+                age_secs = current_time.saturating_sub(entry.resolved_at),
+                "network cache expired"
+            );
+        } else {
+            tracing::debug!("network cache miss");
+        }
+        refresh_cache(&hosts)
     }
+}
+
+fn refresh_cache(hosts: &[String]) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
+    let (v4, v6) = resolve_hosts(hosts);
+    if !v4.is_empty() || !v6.is_empty() {
+        let mut addresses = v4.iter().copied().map(IpAddr::V4).collect::<Vec<_>>();
+        addresses.extend(v6.iter().copied().map(IpAddr::V6));
+        let entry = cache::Entry {
+            hosts: hosts.to_vec(),
+            addresses,
+            resolved_at: cache::now(),
+        };
+        match cache::save(entry) {
+            Ok(()) => tracing::debug!("network cache updated"),
+            Err(error) => tracing::debug!(%error, "network cache update failed"),
+        }
+    }
+    (v4, v6)
+}
+
+fn spawn_cache_refresh(hosts: Vec<String>) {
+    std::thread::spawn(move || {
+        tracing::debug!("background network cache refresh started");
+        refresh_cache(&hosts);
+    });
+}
+
+fn split_addresses(addresses: &[IpAddr]) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
+    let mut v4 = Vec::new();
+    let mut v6 = Vec::new();
+    for address in addresses {
+        match address {
+            IpAddr::V4(address) => v4.push(*address),
+            IpAddr::V6(address) => v6.push(*address),
+        }
+    }
+    (v4, v6)
 }
 
 /// Removes hook files written by older pithos versions that loaded rules

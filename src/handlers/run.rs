@@ -38,7 +38,11 @@ pub(crate) fn run(
     run_session(&config, &repository, forced_strategy, auto_yes, auto_no)
 }
 
-#[tracing::instrument(skip_all, fields(repository = %repository.display()))]
+#[tracing::instrument(
+    level = "debug",
+    skip_all,
+    fields(repository = %repository.display())
+)]
 fn run_session(
     config: &Config,
     repository: &Path,
@@ -239,7 +243,11 @@ fn prepare_session(
     })
 }
 
-#[tracing::instrument(skip_all, fields(repository = %repository.display()))]
+#[tracing::instrument(
+    level = "debug",
+    skip_all,
+    fields(repository = %repository.display())
+)]
 fn prepare_workspace(
     config: &Config,
     repository: &Path,
