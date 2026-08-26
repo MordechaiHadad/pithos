@@ -60,7 +60,7 @@ fn run_session(
         unmanaged_paths,
         whitelist_addresses,
     } = prepared;
-    println!(
+    tracing::info!(
         "pithos session {}: inspect it live with `pithos shell {}` or open {} in your editor",
         record.id,
         record.id,
