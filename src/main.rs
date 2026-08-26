@@ -3,7 +3,7 @@ use eyre::{Result, bail};
 use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use tracing_subscriber::{EnvFilter, prelude::*};
+use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan, prelude::*};
 
 mod agent;
 mod audio;
@@ -159,7 +159,11 @@ fn init_tracing(verbose: u8) {
 
     tracing_subscriber::registry()
         .with(env_filter)
-        .with(tracing_subscriber::fmt::layer().with_target(false))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_span_events(FmtSpan::CLOSE),
+        )
         .init();
 }
 

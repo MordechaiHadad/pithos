@@ -1,6 +1,5 @@
 pub(crate) mod enforcement;
 
-use eyre::Result;
 use std::fs;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
@@ -95,25 +94,32 @@ impl Networking {
         rules
     }
 
-    #[tracing::instrument(skip(self, command))]
-    pub(crate) fn apply_to(&self, command: &mut std::process::Command) -> Result<()> {
+    pub(crate) fn apply_to_resolved(
+        &self,
+        command: &mut std::process::Command,
+        v4: &[Ipv4Addr],
+        v6: &[Ipv6Addr],
+    ) {
         if !self.enabled {
-            tracing::debug!("networking disabled by configuration; skipping egress rules");
-            return Ok(());
+            return;
         }
         remove_legacy_hook_install();
-        let hosts = self.effective_whitelist();
-        let (v4, v6) = resolve_hosts(&hosts);
-        let rules = serialize_rules(&self.render_rules(&v4, &v6));
+        let rules = serialize_rules(&self.render_rules(v4, v6));
         tracing::debug!(
-            whitelist = ?hosts,
             v4_addresses = v4.len(),
             v6_addresses = v6.len(),
             rules_bytes = rules.len(),
             "delivering egress networking rules to the container entrypoint"
         );
         command.env(RULES_ENV, &rules);
-        Ok(())
+    }
+
+    pub(crate) fn resolve_whitelist(&self) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
+        if !self.enabled {
+            return (Vec::new(), Vec::new());
+        }
+        let hosts = self.effective_whitelist();
+        resolve_hosts(&hosts)
     }
 }
 
@@ -163,8 +169,13 @@ pub(crate) fn serialize_rules(rules: &str) -> String {
 /// once instead of once per host.
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 
+#[tracing::instrument(
+    level = "debug",
+    skip(hosts),
+    fields(hosts = hosts.len())
+)]
 pub(crate) fn resolve_hosts(hosts: &[String]) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
-    let started = Instant::now();
+    let deadline = Instant::now() + RESOLVE_TIMEOUT;
     let (tx, rx) = mpsc::channel::<(String, io::Result<Vec<SocketAddr>>)>();
     for host in hosts {
         let tx = tx.clone();
@@ -182,7 +193,7 @@ pub(crate) fn resolve_hosts(hosts: &[String]) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) 
     let mut v4 = Vec::new();
     let mut v6 = Vec::new();
     for _ in 0..hosts.len() {
-        let remaining = RESOLVE_TIMEOUT.saturating_sub(started.elapsed());
+        let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             break;
         }
@@ -204,16 +215,15 @@ pub(crate) fn resolve_hosts(hosts: &[String]) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) 
             }
         }
     }
-    if started.elapsed() >= RESOLVE_TIMEOUT {
-        tracing::warn!(
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "whitelist resolution hit its time budget; unresolved hosts are skipped"
-        );
-    }
     v4.sort_unstable();
     v4.dedup();
     v6.sort_unstable();
     v6.dedup();
+    tracing::debug!(
+        v4_addresses = v4.len(),
+        v6_addresses = v6.len(),
+        "whitelist DNS resolution finished"
+    );
     (v4, v6)
 }
 

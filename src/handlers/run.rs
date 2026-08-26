@@ -2,7 +2,6 @@ use eyre::{Result, WrapErr, eyre};
 use std::env;
 use std::path::Path;
 use std::process::Command;
-use std::time::Instant;
 
 use crate::config::Config;
 use crate::registry;
@@ -27,19 +26,15 @@ pub(crate) fn run(
              system paths writable inside the sandbox"
         );
     }
-    let load_started = Instant::now();
-    let config = Config::load(config_path, toolchain)?;
-    tracing::debug!(
-        elapsed_ms = load_started.elapsed().as_millis() as u64,
-        "configuration loaded"
-    );
+    let config = {
+        let _span = tracing::debug_span!("configuration load").entered();
+        Config::load(config_path, toolchain)?
+    };
     let forced_strategy = parse_override(config.copy_strategy.as_deref())?;
-    let sweep_started = Instant::now();
-    sweep_orphans(&registry::sandbox_paths())?;
-    tracing::debug!(
-        elapsed_ms = sweep_started.elapsed().as_millis() as u64,
-        "orphan sweep finished"
-    );
+    {
+        let _span = tracing::debug_span!("orphan sweep").entered();
+        sweep_orphans(&registry::sandbox_paths())?;
+    }
     run_session(&config, &repository, forced_strategy, auto_yes, auto_no)
 }
 
@@ -59,6 +54,7 @@ fn run_session(
         uid,
         gid,
         unmanaged_paths,
+        whitelist_addresses,
     } = prepared;
     println!(
         "pithos session {}: inspect it live with `pithos shell {}` or open {} in your editor",
@@ -135,7 +131,11 @@ fn run_session(
         }
     }
     config.harness.mount(&mut command, &record.id)?;
-    config.networking.apply_to(&mut command)?;
+    config.networking.apply_to_resolved(
+        &mut command,
+        &whitelist_addresses.0,
+        &whitelist_addresses.1,
+    );
     if let Some(audio) = crate::audio::passthrough(config.audio) {
         tracing::debug!(volume = %audio.volume, "passing host audio through");
         command.args(["--volume", &audio.volume]);
@@ -147,16 +147,11 @@ fn run_session(
     }
     crate::networking::enforcement::spawn_check(&config.networking, record.container_name.clone());
     tracing::debug!(?command, "starting harness container");
-    let launch_started = Instant::now();
     let mut child = command
         .arg(config.image_tag())
         .spawn()
         .wrap_err("could not execute podman run")?;
-    tracing::debug!(
-        pid = child.id(),
-        elapsed_ms = launch_started.elapsed().as_millis() as u64,
-        "harness container handed off to podman"
-    );
+    tracing::debug!(pid = child.id(), "harness container handed off to podman");
     let status = child.wait().wrap_err("could not wait for podman run")?;
     tracing::debug!(%status, "harness container exited");
     registry::remove(&record.id);
@@ -197,6 +192,7 @@ struct PreparedSession {
     uid: u32,
     gid: u32,
     unmanaged_paths: Vec<String>,
+    whitelist_addresses: (Vec<std::net::Ipv4Addr>, Vec<std::net::Ipv6Addr>),
 }
 
 /// Prepares the sandbox while the image freshness check or build runs on a
@@ -208,39 +204,35 @@ fn prepare_session(
     repository: &Path,
     forced_strategy: Option<CopyStrategy>,
 ) -> Result<PreparedSession> {
-    let started = Instant::now();
+    let _span = tracing::debug_span!("session preparation").entered();
     std::thread::scope(|scope| {
         let builder = scope.spawn(|| -> Result<()> {
-            let image_started = Instant::now();
+            let _span = tracing::debug_span!("image preparation").entered();
             let up_to_date = config.image_up_to_date()?;
-            tracing::debug!(
-                up_to_date,
-                elapsed_ms = image_started.elapsed().as_millis() as u64,
-                "image freshness checked"
-            );
+            tracing::debug!(up_to_date, "image freshness checked");
             if !up_to_date {
                 config.build_image()?;
-                tracing::debug!(
-                    elapsed_ms = image_started.elapsed().as_millis() as u64,
-                    "image build finished"
-                );
             }
             Ok(())
         });
+        let whitelist_resolver = scope.spawn(|| config.networking.resolve_whitelist());
         let prepared = prepare_workspace(config, repository, forced_strategy);
         match prepared {
             Ok(pair) => {
                 builder
                     .join()
                     .map_err(|_| eyre!("image preparation thread panicked"))??;
-                tracing::debug!(
-                    elapsed_ms = started.elapsed().as_millis() as u64,
-                    "session prepared"
-                );
-                Ok(pair)
+                let whitelist_addresses = whitelist_resolver
+                    .join()
+                    .map_err(|_| eyre!("whitelist resolver thread panicked"))?;
+                Ok(PreparedSession {
+                    whitelist_addresses,
+                    ..pair
+                })
             }
             Err(prepare_error) => {
                 let _ = builder.join();
+                let _ = whitelist_resolver.join();
                 Err(prepare_error)
             }
         }
@@ -255,12 +247,9 @@ fn prepare_workspace(
 ) -> Result<PreparedSession> {
     let sandbox = TempDir::create("pithos-workspace")?;
     let strategy = populate_sandbox(repository, sandbox.path(), &config.ignore, forced_strategy)?;
-    let strip_started = Instant::now();
+    let _span = tracing::debug_span!("strip remotes").entered();
     strip_remotes(sandbox.path())?;
-    tracing::debug!(
-        elapsed_ms = strip_started.elapsed().as_millis() as u64,
-        "remotes stripped"
-    );
+    drop(_span);
     let uid = crate::platform::current_uid();
     let gid = crate::platform::current_gid();
     let current_user = format!("{uid}:{gid}");
@@ -274,12 +263,8 @@ fn prepare_workspace(
         unmanaged_paths.clone(),
         config.diff_viewer.clone(),
     );
-    let save_started = Instant::now();
+    let _span = tracing::debug_span!("save session record").entered();
     record.save()?;
-    tracing::debug!(
-        elapsed_ms = save_started.elapsed().as_millis() as u64,
-        "session record saved"
-    );
     Ok(PreparedSession {
         sandbox,
         record,
@@ -287,6 +272,7 @@ fn prepare_workspace(
         uid,
         gid,
         unmanaged_paths,
+        whitelist_addresses: (Vec::new(), Vec::new()),
     })
 }
 
