@@ -88,6 +88,17 @@ pub(crate) fn temporary_base() -> Result<PathBuf> {
     Ok(base)
 }
 
+/// How a single file is materialized on disk. This is the low-level
+/// mechanism used by [`crate::sandbox`] and is deliberately tier-agnostic:
+/// it knows nothing about `Worktree`. Higher-level policy in
+/// [`crate::workspace::CopyStrategy`] maps tiers to this method via
+/// [`crate::workspace::CopyStrategy::copy_method`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CopyMethod {
+    Reflink,
+    Copy,
+}
+
 /// Aggregate outcome of a tree copy, reported at debug level for profiling.
 #[derive(Debug, Default)]
 pub(crate) struct CopyStats {
@@ -127,44 +138,31 @@ pub(crate) enum CopiedEntry {
     Symlink,
 }
 
-pub(crate) fn copy_tree(source: &Path, destination: &Path, ignore: &[String]) -> Result<()> {
-    let started = Instant::now();
-    if crate::progress::is_progress_enabled() {
-        let stats = crate::progress::with_copy_progress(|progress| {
-            copy_tree_at_with_progress(source, destination, Path::new(""), ignore, Some(progress))
-        })?;
-        tracing::debug!(
-            files = stats.files,
-            cloned = stats.cloned,
-            symlinks = stats.symlinks,
-            directories = stats.directories,
-            bytes = stats.bytes,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "tree copy finished"
-        );
-        Ok(())
-    } else {
-        let stats = copy_tree_at(source, destination, Path::new(""), ignore)?;
-        tracing::debug!(
-            files = stats.files,
-            cloned = stats.cloned,
-            symlinks = stats.symlinks,
-            directories = stats.directories,
-            bytes = stats.bytes,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "tree copy finished"
-        );
-        Ok(())
-    }
-}
-
-fn copy_tree_at(
+pub(crate) fn copy_tree(
     source: &Path,
     destination: &Path,
-    relative: &Path,
     ignore: &[String],
+    method: CopyMethod,
+    progress: Option<&crate::progress::CopyProgress>,
 ) -> Result<CopyStats> {
-    copy_tree_at_with_progress(source, destination, relative, ignore, None)
+    let started = Instant::now();
+    let stats =
+        copy_tree_at_with_progress(source, destination, Path::new(""), ignore, method, progress)?;
+    let method_label = match method {
+        CopyMethod::Reflink => "reflink",
+        CopyMethod::Copy => "plain",
+    };
+    tracing::debug!(
+        files = stats.files,
+        cloned = stats.cloned,
+        symlinks = stats.symlinks,
+        directories = stats.directories,
+        bytes = stats.bytes,
+        method = method_label,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "tree copy finished"
+    );
+    Ok(stats)
 }
 
 fn copy_tree_at_with_progress(
@@ -172,6 +170,7 @@ fn copy_tree_at_with_progress(
     destination: &Path,
     relative: &Path,
     ignore: &[String],
+    method: CopyMethod,
     progress: Option<&crate::progress::CopyProgress>,
 ) -> Result<CopyStats> {
     fs::create_dir_all(destination)?;
@@ -195,56 +194,44 @@ fn copy_tree_at_with_progress(
             files.push((source_path, destination_path));
         }
     }
-    let file_entries = if let Some(progress_state) = progress {
-        files
-            .par_iter()
-            .map(|(source_path, destination_path)| {
-                let result = copy_entry(source_path, destination_path, DestinationSafety::Fresh);
-                if let Ok(Some(entry)) = &result {
-                    match entry {
-                        CopiedEntry::File { bytes, reflinked } => {
-                            progress_state.inc_file(*bytes, *reflinked);
-                        }
-                        CopiedEntry::Symlink => {
-                            progress_state.inc_symlink();
-                        }
+    let file_entries = files
+        .par_iter()
+        .map(|(source_path, destination_path)| {
+            let result = copy_entry(
+                source_path,
+                destination_path,
+                DestinationSafety::Fresh,
+                method,
+            );
+            if let (Some(progress_state), Ok(Some(entry))) = (progress, &result) {
+                match entry {
+                    CopiedEntry::File { bytes, reflinked } => {
+                        progress_state.inc_file(*bytes, *reflinked);
+                    }
+                    CopiedEntry::Symlink => {
+                        progress_state.inc_symlink();
                     }
                 }
-                result
-            })
-            .collect::<Result<Vec<Option<CopiedEntry>>>>()?
-    } else {
-        files
-            .par_iter()
-            .map(|(source_path, destination_path)| {
-                copy_entry(source_path, destination_path, DestinationSafety::Fresh)
-            })
-            .collect::<Result<Vec<Option<CopiedEntry>>>>()?
-    };
+            }
+            result
+        })
+        .collect::<Result<Vec<Option<CopiedEntry>>>>()?;
     for entry in file_entries.into_iter().flatten() {
         stats.record_entry(entry);
     }
-    let subtree_stats = if let Some(progress_ref) = progress {
-        subdirectories
-            .par_iter()
-            .map(|(source_path, destination_path, child_relative)| {
-                copy_tree_at_with_progress(
-                    source_path,
-                    destination_path,
-                    child_relative,
-                    ignore,
-                    Some(progress_ref),
-                )
-            })
-            .collect::<Result<Vec<CopyStats>>>()?
-    } else {
-        subdirectories
-            .par_iter()
-            .map(|(source_path, destination_path, child_relative)| {
-                copy_tree_at(source_path, destination_path, child_relative, ignore)
-            })
-            .collect::<Result<Vec<CopyStats>>>()?
-    };
+    let subtree_stats = subdirectories
+        .par_iter()
+        .map(|(source_path, destination_path, child_relative)| {
+            copy_tree_at_with_progress(
+                source_path,
+                destination_path,
+                child_relative,
+                ignore,
+                method,
+                progress,
+            )
+        })
+        .collect::<Result<Vec<CopyStats>>>()?;
     for subtree in subtree_stats {
         stats.merge(subtree);
     }
@@ -267,6 +254,7 @@ pub(crate) fn copy_entry(
     source: &Path,
     destination: &Path,
     safety: DestinationSafety,
+    method: CopyMethod,
 ) -> Result<Option<CopiedEntry>> {
     tracing::trace!(source = %source.display(), destination = %destination.display(), "copying entry");
     let metadata = fs::symlink_metadata(source)?;
@@ -278,8 +266,8 @@ pub(crate) fn copy_entry(
     } else if file_type.is_file() {
         let bytes = metadata.len();
         let reflinked = match safety {
-            DestinationSafety::Fresh => populate_copy(source, destination, &metadata)?,
-            DestinationSafety::Shared => apply_atomic_copy(source, destination, &metadata)?,
+            DestinationSafety::Fresh => populate_copy(source, destination, &metadata, method)?,
+            DestinationSafety::Shared => apply_atomic_copy(source, destination, &metadata, method)?,
         };
         Ok(Some(CopiedEntry::File { bytes, reflinked }))
     } else {
@@ -293,19 +281,30 @@ pub(crate) fn copy_entry(
 /// the reflink crate refuses to open existing files (`O_EXCL`), so this path
 /// can neither clobber foreign data nor expose partial content. Returns
 /// whether the copy was served by a filesystem-level clone.
-fn populate_copy(source: &Path, destination: &Path, metadata: &fs::Metadata) -> Result<bool> {
-    let reflinked = match reflink_copy::reflink_or_copy(source, destination) {
-        Ok(None) => true,
-        Ok(Some(_)) => false,
-        Err(error) => {
-            tracing::debug!(
-                source = %source.display(),
-                %error,
-                "clone attempt failed; falling back to byte copy"
-            );
+fn populate_copy(
+    source: &Path,
+    destination: &Path,
+    metadata: &fs::Metadata,
+    method: CopyMethod,
+) -> Result<bool> {
+    let reflinked = match method {
+        CopyMethod::Copy => {
             fs::copy(source, destination)?;
             false
         }
+        CopyMethod::Reflink => match reflink_copy::reflink_or_copy(source, destination) {
+            Ok(None) => true,
+            Ok(Some(_)) => false,
+            Err(error) => {
+                tracing::debug!(
+                    source = %source.display(),
+                    %error,
+                    "clone attempt failed; falling back to byte copy"
+                );
+                fs::copy(source, destination)?;
+                false
+            }
+        },
     };
     fs::set_permissions(destination, metadata.permissions())?;
     Ok(reflinked)
@@ -331,27 +330,39 @@ fn unique_temp_path(destination: &Path) -> PathBuf {
 /// being preemptively unlinked, and simultaneous applies to one repository
 /// cannot steal each other's staging file. Returns whether the copy was
 /// served by a filesystem-level clone.
-fn apply_atomic_copy(source: &Path, destination: &Path, metadata: &fs::Metadata) -> Result<bool> {
+fn apply_atomic_copy(
+    source: &Path,
+    destination: &Path,
+    metadata: &fs::Metadata,
+    method: CopyMethod,
+) -> Result<bool> {
     let mut temp = unique_temp_path(destination);
     let reflinked = loop {
-        break match reflink_copy::reflink_or_copy(source, &temp) {
-            Ok(None) => true,
-            Ok(Some(_)) => false,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                let _ = fs::remove_file(&temp);
-                temp = unique_temp_path(destination);
-                continue;
-            }
-            Err(error) => {
-                tracing::debug!(
-                    source = %source.display(),
-                    %error,
-                    "clone attempt failed; falling back to byte copy"
-                );
+        let attempt = match method {
+            CopyMethod::Copy => {
                 fs::copy(source, &temp)?;
                 false
             }
+            CopyMethod::Reflink => match reflink_copy::reflink_or_copy(source, &temp) {
+                Ok(None) => true,
+                Ok(Some(_)) => false,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    let _ = fs::remove_file(&temp);
+                    temp = unique_temp_path(destination);
+                    continue;
+                }
+                Err(error) => {
+                    tracing::debug!(
+                        source = %source.display(),
+                        %error,
+                        "clone attempt failed; falling back to byte copy"
+                    );
+                    fs::copy(source, &temp)?;
+                    false
+                }
+            },
         };
+        break attempt;
     };
     fs::set_permissions(&temp, metadata.permissions())?;
     if let Err(error) = fs::rename(&temp, destination) {
@@ -450,29 +461,21 @@ fn same_file(first: &Path, second: &Path) -> Result<bool> {
     }
 }
 
-pub(crate) fn apply_tree(source: &Path, destination: &Path, unmanaged: &[String]) -> Result<()> {
-    if crate::progress::is_progress_enabled() {
-        crate::progress::with_apply_progress(|progress| {
-            apply_tree_at_with_progress(
-                source,
-                destination,
-                Path::new(""),
-                unmanaged,
-                Some(progress),
-            )
-        })
-    } else {
-        apply_tree_at(source, destination, Path::new(""), unmanaged)
-    }
-}
-
-fn apply_tree_at(
+pub(crate) fn apply_tree(
     source: &Path,
     destination: &Path,
-    relative: &Path,
     unmanaged: &[String],
+    method: CopyMethod,
+    progress: Option<&crate::progress::CopyProgress>,
 ) -> Result<()> {
-    apply_tree_at_with_progress(source, destination, relative, unmanaged, None)
+    apply_tree_at_with_progress(
+        source,
+        destination,
+        Path::new(""),
+        unmanaged,
+        method,
+        progress,
+    )
 }
 
 fn apply_tree_at_with_progress(
@@ -480,6 +483,7 @@ fn apply_tree_at_with_progress(
     destination: &Path,
     relative: &Path,
     unmanaged: &[String],
+    method: CopyMethod,
     progress: Option<&crate::progress::CopyProgress>,
 ) -> Result<()> {
     for entry in fs::read_dir(destination)? {
@@ -508,10 +512,16 @@ fn apply_tree_at_with_progress(
                 &destination_path,
                 &child_relative,
                 unmanaged,
+                method,
                 progress,
             )?;
         } else {
-            let result = copy_entry(&source_path, &destination_path, DestinationSafety::Shared)?;
+            let result = copy_entry(
+                &source_path,
+                &destination_path,
+                DestinationSafety::Shared,
+                method,
+            )?;
             if let (Some(progress_state), Some(entry)) = (progress, &result) {
                 match entry {
                     CopiedEntry::File { bytes, reflinked } => {
@@ -610,7 +620,7 @@ mod tests {
 
     fn apply(source: &Path, destination: &Path) -> bool {
         let metadata = fs::symlink_metadata(source).unwrap();
-        apply_atomic_copy(source, destination, &metadata).unwrap()
+        apply_atomic_copy(source, destination, &metadata, CopyMethod::Reflink).unwrap()
     }
 
     #[test]
@@ -656,6 +666,7 @@ mod tests {
             &source,
             &destination,
             &fs::symlink_metadata(&source).unwrap(),
+            CopyMethod::Reflink,
         )
         .unwrap();
 
@@ -717,7 +728,14 @@ mod tests {
         write_file(source.path(), "sub/nested.txt", "nested");
         make_symlink(source.path(), "link", "root.txt");
 
-        copy_tree(source.path(), destination.path(), &[]).unwrap();
+        copy_tree(
+            source.path(),
+            destination.path(),
+            &[],
+            CopyMethod::Reflink,
+            None,
+        )
+        .unwrap();
 
         assert_trees_equal(source.path(), destination.path());
         let link_metadata = fs::symlink_metadata(destination.path().join("link")).unwrap();
@@ -736,11 +754,35 @@ mod tests {
         write_file(source.path(), "ephemeral/cache.bin", "cache");
         write_file(source.path(), "ignored/scratch.bin", "scratch");
 
-        copy_tree(source.path(), destination.path(), &["ignored".to_string()]).unwrap();
+        copy_tree(
+            source.path(),
+            destination.path(),
+            &["ignored".to_string()],
+            CopyMethod::Reflink,
+            None,
+        )
+        .unwrap();
 
         assert!(destination.path().join("kept.txt").exists());
         assert!(destination.path().join("ephemeral/cache.bin").exists());
         assert!(!destination.path().join("ignored").exists());
+    }
+
+    #[test]
+    fn plain_copy_does_not_reflink() {
+        let source = test_temp_dir("pithos-test-plain-source");
+        let destination = test_temp_dir("pithos-test-plain-destination");
+        write_file(source.path(), "a.txt", "hello");
+        let stats = copy_tree(
+            source.path(),
+            destination.path(),
+            &[],
+            CopyMethod::Copy,
+            None,
+        )
+        .unwrap();
+        assert_eq!(stats.cloned, 0);
+        assert_eq!(stats.files, 1);
     }
 
     #[test]
@@ -844,7 +886,7 @@ mod tests {
         make_symlink(host.path(), "removed-link", "keep.txt");
         make_symlink(sandbox.path(), "added-link", "added.txt");
 
-        apply_tree(sandbox.path(), host.path(), &[]).unwrap();
+        apply_tree(sandbox.path(), host.path(), &[], CopyMethod::Reflink, None).unwrap();
 
         assert_trees_equal(sandbox.path(), host.path());
     }
@@ -860,7 +902,14 @@ mod tests {
         write_file(sandbox.path(), "added.txt", "new");
         let unmanaged = vec!["unmanaged".to_string()];
 
-        apply_tree(sandbox.path(), host.path(), &unmanaged).unwrap();
+        apply_tree(
+            sandbox.path(),
+            host.path(),
+            &unmanaged,
+            CopyMethod::Reflink,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(
             fs::read_to_string(host.path().join("keep.txt")).unwrap(),

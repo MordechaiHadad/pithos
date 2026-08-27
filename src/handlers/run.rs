@@ -5,10 +5,10 @@ use std::process::Command;
 
 use crate::config::Config;
 use crate::registry;
-use crate::sandbox::{TempDir, apply_tree, has_changes, sweep_orphans};
+use crate::sandbox::{TempDir, has_changes, sweep_orphans};
 use crate::session;
 use crate::session::strip_remotes;
-use crate::strategy::{CONTAINER_GIT_OBJECTS, CopyStrategy, parse_override, populate_sandbox};
+use crate::workspace::{CopyStrategy, parse_override, populate_sandbox, worktree_volume_arg};
 
 pub(crate) fn run(
     config_path: Option<&Path>,
@@ -17,9 +17,6 @@ pub(crate) fn run(
     auto_no: bool,
 ) -> Result<()> {
     let repository = env::current_dir().wrap_err("cannot determine current directory")?;
-    if !repository.join(".git").exists() {
-        eyre::bail!("current directory is not a git repository")
-    }
     if crate::platform::current_uid() == 0 {
         eyre::bail!(
             "pithos sessions require a non-root host user; running as root would leave \
@@ -101,16 +98,12 @@ fn run_session(
         "--volume",
         &format!("{}:{}:rw,Z", sandbox.path().display(), config.workspace),
     ]);
-    if strategy == CopyStrategy::Worktree {
-        let objects_dir = repository.join(".git").join("objects");
+    if let Some(volume) = worktree_volume_arg(repository, strategy) {
         tracing::debug!(
-            volume = %objects_dir.display(),
+            volume,
             "mounting origin git objects read-only for the worktree tier"
         );
-        command.args([
-            "--volume",
-            &format!("{}:{CONTAINER_GIT_OBJECTS}:ro,Z", objects_dir.display()),
-        ]);
+        command.args(["--volume", &volume]);
     }
     command.args(["--workdir", &config.workspace]);
     command.args(["--tmpfs", &crate::harness::tmpfs_spec("/tmp")]);
@@ -190,7 +183,25 @@ fn run_session(
     };
     tracing::debug!(apply, "review decision");
     if apply {
-        apply_tree(sandbox.path(), repository, &unmanaged_paths)?;
+        let method = strategy.copy_method();
+        let progress = if crate::progress::is_progress_enabled() {
+            Some(())
+        } else {
+            None
+        };
+        if progress.is_some() {
+            crate::progress::with_apply_progress(|p| {
+                crate::sandbox::apply_tree(
+                    sandbox.path(),
+                    repository,
+                    &unmanaged_paths,
+                    method,
+                    Some(p),
+                )
+            })?;
+        } else {
+            crate::sandbox::apply_tree(sandbox.path(), repository, &unmanaged_paths, method, None)?;
+        }
     }
     if !status.success() {
         eyre::bail!("harness exited with {status}")
@@ -266,9 +277,8 @@ fn prepare_workspace(
 ) -> Result<PreparedSession> {
     let sandbox = TempDir::create("pithos-workspace")?;
     let strategy = populate_sandbox(repository, sandbox.path(), &config.ignore, forced_strategy)?;
-    let _span = tracing::debug_span!("strip remotes").entered();
-    strip_remotes(sandbox.path())?;
-    drop(_span);
+    // strip_remotes is best-effort: non-git sandboxes are fine
+    let _ = strip_remotes(sandbox.path());
     let uid = crate::platform::current_uid();
     let gid = crate::platform::current_gid();
     let current_user = format!("{uid}:{gid}");
@@ -281,6 +291,7 @@ fn prepare_workspace(
         &current_user,
         unmanaged_paths.clone(),
         config.diff_viewer.clone(),
+        Some(strategy),
     );
     let _span = tracing::debug_span!("save session record").entered();
     record.save()?;

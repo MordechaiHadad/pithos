@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use crate::config::Config;
-use crate::sandbox::{TempDir, apply_tree};
+use crate::sandbox::{CopyMethod, TempDir, apply_tree};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ChangeKind {
@@ -124,7 +124,7 @@ fn build_session_view(source: &Path, sandbox: &Path, unmanaged: &[String]) -> Re
     let repo_path = repo_dir.display().to_string();
     git_ok(source, &["clone", &bundle_path, &repo_path])
         .wrap_err("could not clone session bundle")?;
-    apply_tree(sandbox, &repo_dir, unmanaged)?;
+    apply_tree(sandbox, &repo_dir, unmanaged, CopyMethod::Reflink, None)?;
     Ok(temp)
 }
 
@@ -315,7 +315,7 @@ fn clean_headers(diff: &str, relative: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sandbox::{copy_tree, has_changes};
+    use crate::sandbox::{CopyMethod, copy_tree, has_changes};
 
     fn write(root: &Path, relative: &str, content: &str) {
         let path = root.join(relative);
@@ -419,7 +419,14 @@ mod tests {
         let source = TempDir::create("pithos-test-view-source").unwrap();
         commit_base(source.path());
         let sandbox = TempDir::create("pithos-test-view-sandbox").unwrap();
-        copy_tree(source.path(), sandbox.path(), &[]).unwrap();
+        copy_tree(
+            source.path(),
+            sandbox.path(),
+            &[],
+            CopyMethod::Reflink,
+            None,
+        )
+        .unwrap();
         write(sandbox.path(), "file.txt", "changed");
 
         let view = build_session_view(source.path(), sandbox.path(), &[]).unwrap();
@@ -441,7 +448,14 @@ mod tests {
         let source = TempDir::create("pithos-test-view-committed-source").unwrap();
         commit_base(source.path());
         let sandbox = TempDir::create("pithos-test-view-committed-sandbox").unwrap();
-        copy_tree(source.path(), sandbox.path(), &[]).unwrap();
+        copy_tree(
+            source.path(),
+            sandbox.path(),
+            &[],
+            CopyMethod::Reflink,
+            None,
+        )
+        .unwrap();
         write(sandbox.path(), "file.txt", "changed");
         git_ok(sandbox.path(), &["add", "-A"]).unwrap();
         git_ok(
@@ -476,7 +490,14 @@ mod tests {
         let source = TempDir::create("pithos-test-view-exclude-source").unwrap();
         commit_base(source.path());
         let sandbox = TempDir::create("pithos-test-view-exclude").unwrap();
-        copy_tree(source.path(), sandbox.path(), &[]).unwrap();
+        copy_tree(
+            source.path(),
+            sandbox.path(),
+            &[],
+            CopyMethod::Reflink,
+            None,
+        )
+        .unwrap();
         write(sandbox.path(), "keep.txt", "changed");
         write(sandbox.path(), "secret.txt", "changed too");
 

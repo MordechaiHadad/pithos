@@ -16,7 +16,7 @@ mod progress;
 mod registry;
 mod sandbox;
 mod session;
-mod strategy;
+mod workspace;
 
 #[derive(Parser)]
 #[command(name = "pithos", version, about = "Run disposable agent workspaces")]

@@ -5,8 +5,9 @@ use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 
 use crate::registry;
-use crate::sandbox::has_changes;
+use crate::sandbox::{CopyMethod, has_changes};
 use crate::session::{ChangeKind, change_kind, review, summarize};
+use crate::workspace::parse_override;
 
 use super::common;
 
@@ -65,11 +66,12 @@ fn pull_workspace(
     if !options.json && !changed.is_empty() {
         summarize(&changed, &target, sandbox);
     }
+    let method = copy_method_for_session(session);
     let mut applied = false;
     if !changed.is_empty() && !options.dry_run {
         match decide_review(options.auto_yes, options.auto_no, io::stdin().is_terminal())? {
             ReviewDecision::Apply => {
-                crate::sandbox::apply_tree(sandbox, &target, &session.unmanaged)?;
+                apply_with_progress(sandbox, &target, &session.unmanaged, method)?;
                 applied = true;
             }
             ReviewDecision::Decline => {}
@@ -87,13 +89,43 @@ fn pull_workspace(
                     &mut session_view,
                 )?;
                 if applied {
-                    crate::sandbox::apply_tree(sandbox, &target, &session.unmanaged)?;
+                    apply_with_progress(sandbox, &target, &session.unmanaged, method)?;
                 }
             }
         }
     }
     emit_pull_report(session, &target, sandbox, &changed, applied, options)?;
     Ok(PullOutcome { target, applied })
+}
+
+fn copy_method_for_session(session: &registry::SessionRecord) -> CopyMethod {
+    match session.strategy.as_deref() {
+        Some(label) => match parse_override(Some(label)) {
+            Ok(Some(strategy)) => strategy.copy_method(),
+            _ => match label {
+                "reflink" => CopyMethod::Reflink,
+                "worktree" => CopyMethod::Reflink,
+                "copy" => CopyMethod::Copy,
+                _ => CopyMethod::Reflink,
+            },
+        },
+        None => CopyMethod::Reflink,
+    }
+}
+
+fn apply_with_progress(
+    sandbox: &Path,
+    target: &Path,
+    unmanaged: &[String],
+    method: CopyMethod,
+) -> Result<()> {
+    if crate::progress::is_progress_enabled() {
+        crate::progress::with_apply_progress(|progress| {
+            crate::sandbox::apply_tree(sandbox, target, unmanaged, method, Some(progress))
+        })
+    } else {
+        crate::sandbox::apply_tree(sandbox, target, unmanaged, method, None)
+    }
 }
 
 fn decide_review(auto_yes: bool, auto_no: bool, stdin_is_tty: bool) -> Result<ReviewDecision> {
@@ -217,6 +249,7 @@ mod tests {
             user: "1000:1000".to_string(),
             unmanaged: unmanaged.iter().map(|path| path.to_string()).collect(),
             diff_viewer: None,
+            strategy: None,
             pid: 0,
             started_at: 0,
         }

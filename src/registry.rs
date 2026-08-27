@@ -18,6 +18,8 @@ pub(crate) struct SessionRecord {
     pub(crate) unmanaged: Vec<String>,
     #[serde(default)]
     pub(crate) diff_viewer: Option<String>,
+    #[serde(default)]
+    pub(crate) strategy: Option<String>,
     pub(crate) pid: u32,
     pub(crate) started_at: u64,
 }
@@ -31,6 +33,7 @@ impl SessionRecord {
         user: &str,
         unmanaged: Vec<String>,
         diff_viewer: Option<String>,
+        strategy: Option<crate::workspace::CopyStrategy>,
     ) -> Self {
         let repo_name = repository
             .file_name()
@@ -47,6 +50,7 @@ impl SessionRecord {
             user: user.to_string(),
             unmanaged,
             diff_viewer,
+            strategy: strategy.map(|s| s.label().to_string()),
             pid: std::process::id(),
             started_at: unix_now(),
         }
@@ -253,6 +257,7 @@ mod tests {
             user: "1000:1000".to_string(),
             unmanaged: Vec::new(),
             diff_viewer: None,
+            strategy: None,
             pid: 42,
             started_at,
         }
@@ -375,6 +380,7 @@ mod tests {
             "1000:1000",
             vec!["target".to_string()],
             Some("difftool -dir {dir}".to_string()),
+            Some(crate::workspace::CopyStrategy::Copy),
         );
 
         assert!(record.id.starts_with("pithos-registry-new-"));

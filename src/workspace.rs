@@ -5,14 +5,10 @@
 //! 1. **Reflink**: the filesystem provides kernel-level CoW clones
 //!    (FICLONE, clonefile, ReFS block cloning); every file is cloned
 //!    through [`crate::sandbox::copy_tree`] at metadata cost.
-//! 2. **Worktree**: no CoW support but the source is a usable git
-//!    repository; objects stay in the origin repository and are mounted
-//!    into the container read-only while the checkout materializes only
-//!    tracked working files.
-//! 3. **Tree**: plain parallel byte copy, the historical behavior.
-//!
-//! Any failure while populating through tier 2 degrades to tier 3, so a
-//! session never fails to start because of the strategy choice.
+//! 2. **Worktree**: the source is a usable git repository; objects stay in
+//!    the origin repository and are mounted into the container read-only
+//!    while the checkout materializes only tracked working files.
+//! 3. **Copy**: plain parallel byte copy with no reflink attempts.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,7 +17,7 @@ use tempfile::{NamedTempFile, tempdir_in};
 use eyre::{Result, WrapErr, bail};
 
 use crate::sandbox::{
-    DestinationSafety, copy_entry, copy_tree, matches_any, remove_path, temporary_base,
+    CopyMethod, DestinationSafety, copy_entry, copy_tree, matches_any, remove_path, temporary_base,
 };
 use crate::session::{git, git_ok};
 
@@ -31,11 +27,16 @@ use crate::session::{git, git_ok};
 /// filesystem operations, and diff views read objects from the source repo.
 pub(crate) const CONTAINER_GIT_OBJECTS: &str = "/pithos/git-objects";
 
+/// Workspace population tier. `Reflink` and `Copy` are direct file-copy
+/// tiers that map to [`crate::sandbox::CopyMethod`] via [`Self::copy_method`],
+/// while `Worktree` is a git-aware tier that clones with shared objects and
+/// overlays dirty/untracked files. `sandbox` never matches on `Worktree`
+/// directly; it only sees the resulting `CopyMethod`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CopyStrategy {
     Reflink,
     Worktree,
-    Tree,
+    Copy,
 }
 
 impl CopyStrategy {
@@ -43,7 +44,14 @@ impl CopyStrategy {
         match self {
             Self::Reflink => "reflink",
             Self::Worktree => "worktree",
-            Self::Tree => "copy",
+            Self::Copy => "copy",
+        }
+    }
+
+    pub(crate) fn copy_method(self) -> CopyMethod {
+        match self {
+            Self::Reflink | Self::Worktree => CopyMethod::Reflink,
+            Self::Copy => CopyMethod::Copy,
         }
     }
 
@@ -51,7 +59,7 @@ impl CopyStrategy {
         match label {
             "reflink" => Ok(Self::Reflink),
             "worktree" => Ok(Self::Worktree),
-            "copy" => Ok(Self::Tree),
+            "copy" => Ok(Self::Copy),
             other => {
                 bail!("invalid copy_strategy {other:?}; expected auto, reflink, worktree or copy")
             }
@@ -79,13 +87,32 @@ pub(crate) fn detect(source: &Path) -> Result<CopyStrategy> {
     } else if worktree_eligible(source) {
         Ok(CopyStrategy::Worktree)
     } else {
-        Ok(CopyStrategy::Tree)
+        Ok(CopyStrategy::Copy)
     }
+}
+
+/// Returns the volume argument for the worktree tier, if applicable.
+pub(crate) fn worktree_volume_arg(repository: &Path, strategy: CopyStrategy) -> Option<String> {
+    if strategy == CopyStrategy::Worktree {
+        let objects_dir = repository.join(".git").join("objects");
+        Some(format!(
+            "{}:{CONTAINER_GIT_OBJECTS}:ro,Z",
+            objects_dir.display()
+        ))
+    } else {
+        None
+    }
+}
+
+/// Whether the source requires a git repository for the given strategy.
+#[allow(dead_code)]
+pub(crate) fn requires_git(strategy: CopyStrategy) -> bool {
+    matches!(strategy, CopyStrategy::Worktree)
 }
 
 /// Populates an empty sandbox directory using the forced strategy or, when
 /// none was configured, the auto-detected one. Returns the strategy that was
-/// actually applied, since tier-2 failures degrade to a full tree copy.
+/// actually applied. Forced strategies fail hard on unsupported platforms.
 pub(crate) fn populate_sandbox(
     source: &Path,
     sandbox: &Path,
@@ -96,47 +123,161 @@ pub(crate) fn populate_sandbox(
         Some(strategy) => strategy,
         None => detect(source).unwrap_or_else(|error| {
             tracing::debug!(%error, "strategy detection failed; using full copy");
-            CopyStrategy::Tree
+            CopyStrategy::Copy
         }),
     };
+
+    if let Some(strategy) = forced {
+        ensure_strategy_supported(source, strategy)?;
+    }
+
     let started = std::time::Instant::now();
-    let used = if crate::progress::is_progress_enabled()
-        && matches!(requested, CopyStrategy::Worktree)
-    {
-        crate::progress::with_worktree_progress(|| {
-            Ok(match populate_worktree(source, sandbox, ignore) {
-                Ok(()) => CopyStrategy::Worktree,
-                Err(error) => {
+    let used = match requested {
+        CopyStrategy::Worktree => {
+            let result = if crate::progress::is_progress_enabled() {
+                crate::progress::with_worktree_progress(|| {
+                    populate_worktree(source, sandbox, ignore).map(|()| CopyStrategy::Worktree)
+                })
+            } else {
+                populate_worktree(source, sandbox, ignore).map(|()| CopyStrategy::Worktree)
+            };
+            match result {
+                Ok(strategy) => strategy,
+                Err(error) if forced.is_none() => {
                     tracing::warn!(%error, "worktree population failed; falling back to full copy");
                     clear_directory(sandbox)?;
-                    copy_tree(source, sandbox, ignore)?;
-                    CopyStrategy::Tree
+                    let method = CopyMethod::Copy;
+                    let stats = if crate::progress::is_progress_enabled() {
+                        crate::progress::with_copy_progress("plain copy", |progress| {
+                            copy_tree(source, sandbox, ignore, method, Some(progress))
+                        })?
+                    } else {
+                        copy_tree(source, sandbox, ignore, method, None)?
+                    };
+                    tracing::debug!(
+                        files = stats.files,
+                        cloned = stats.cloned,
+                        symlinks = stats.symlinks,
+                        directories = stats.directories,
+                        bytes = stats.bytes,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "fallback plain copy finished"
+                    );
+                    CopyStrategy::Copy
                 }
-            })
-        })?
-    } else {
-        match requested {
-            CopyStrategy::Reflink | CopyStrategy::Tree => {
-                copy_tree(source, sandbox, ignore)?;
-                requested
+                Err(error) => return Err(error),
             }
-            CopyStrategy::Worktree => match populate_worktree(source, sandbox, ignore) {
-                Ok(()) => CopyStrategy::Worktree,
-                Err(error) => {
-                    tracing::warn!(%error, "worktree population failed; falling back to full copy");
-                    clear_directory(sandbox)?;
-                    copy_tree(source, sandbox, ignore)?;
-                    CopyStrategy::Tree
-                }
-            },
+        }
+        CopyStrategy::Reflink => {
+            let method = CopyMethod::Reflink;
+            let stats = if crate::progress::is_progress_enabled() {
+                crate::progress::with_copy_progress("reflink copy", |progress| {
+                    copy_tree(source, sandbox, ignore, method, Some(progress))
+                })?
+            } else {
+                copy_tree(source, sandbox, ignore, method, None)?
+            };
+            tracing::debug!(
+                files = stats.files,
+                cloned = stats.cloned,
+                symlinks = stats.symlinks,
+                directories = stats.directories,
+                bytes = stats.bytes,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "reflink copy finished"
+            );
+            CopyStrategy::Reflink
+        }
+        CopyStrategy::Copy => {
+            let method = CopyMethod::Copy;
+            let stats = if crate::progress::is_progress_enabled() {
+                crate::progress::with_copy_progress("plain copy", |progress| {
+                    copy_tree(source, sandbox, ignore, method, Some(progress))
+                })?
+            } else {
+                copy_tree(source, sandbox, ignore, method, None)?
+            };
+            tracing::debug!(
+                files = stats.files,
+                cloned = stats.cloned,
+                symlinks = stats.symlinks,
+                directories = stats.directories,
+                bytes = stats.bytes,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "plain copy finished"
+            );
+            CopyStrategy::Copy
         }
     };
+
     tracing::debug!(
         strategy = used.label(),
         elapsed_ms = started.elapsed().as_millis() as u64,
         "workspace populated"
     );
     Ok(used)
+}
+
+/// Auto-mode wrapper that degrades worktree failures to plain copy.
+#[allow(dead_code)]
+pub(crate) fn populate_sandbox_auto_fallback(
+    source: &Path,
+    sandbox: &Path,
+    ignore: &[String],
+) -> Result<CopyStrategy> {
+    match populate_sandbox(source, sandbox, ignore, None) {
+        Ok(strategy) => Ok(strategy),
+        Err(error) => {
+            tracing::warn!(%error, "worktree population failed; falling back to full copy");
+            clear_directory(sandbox)?;
+            let stats = if crate::progress::is_progress_enabled() {
+                crate::progress::with_copy_progress("plain copy", |progress| {
+                    copy_tree(source, sandbox, ignore, CopyMethod::Copy, Some(progress))
+                })?
+            } else {
+                copy_tree(source, sandbox, ignore, CopyMethod::Copy, None)?
+            };
+            tracing::debug!(
+                files = stats.files,
+                cloned = stats.cloned,
+                symlinks = stats.symlinks,
+                directories = stats.directories,
+                bytes = stats.bytes,
+                "fallback tree copy finished"
+            );
+            Ok(CopyStrategy::Copy)
+        }
+    }
+}
+
+fn ensure_strategy_supported(source: &Path, strategy: CopyStrategy) -> Result<()> {
+    match strategy {
+        CopyStrategy::Reflink => {
+            if !reflink_supported()? {
+                bail!("reflink strategy requested but filesystem does not support reflink clones");
+            }
+        }
+        CopyStrategy::Worktree => {
+            require_worktree_eligible(source)?;
+        }
+        CopyStrategy::Copy => {}
+    }
+    Ok(())
+}
+
+fn require_worktree_eligible(source: &Path) -> Result<()> {
+    if source.join(".gitmodules").exists() {
+        bail!("worktree strategy requested but repository contains submodules");
+    }
+    let output = git(source, &["rev-parse", "--verify", "HEAD"]);
+    match output {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => bail!(
+            "worktree strategy requested but HEAD is not resolvable: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(error) => bail!("worktree strategy requested but git is unavailable: {error}"),
+    }
 }
 
 /// Whether the current filesystem can serve kernel-level CoW clones.
@@ -236,7 +377,12 @@ fn overlay_dirty_files(source: &Path, sandbox: &Path) -> Result<()> {
             if let Some(parent) = sandbox_path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            copy_entry(&source_path, &sandbox_path, DestinationSafety::Fresh)?;
+            copy_entry(
+                &source_path,
+                &sandbox_path,
+                DestinationSafety::Fresh,
+                CopyMethod::Reflink,
+            )?;
         } else if fs::symlink_metadata(&sandbox_path).is_ok() {
             remove_path(&sandbox_path)?;
         }
@@ -309,6 +455,7 @@ fn fill_untracked_files(source: &Path, sandbox: &Path, ignore: &[String]) -> Res
                 &source.join(&relative),
                 &destination,
                 DestinationSafety::Fresh,
+                CopyMethod::Reflink,
             )?;
         }
     }
@@ -338,6 +485,7 @@ fn copy_untracked_directory(
                 &entry.path(),
                 &sandbox.join(&child_relative),
                 DestinationSafety::Fresh,
+                CopyMethod::Reflink,
             )?;
         }
     }
@@ -470,7 +618,7 @@ mod tests {
         );
         assert_eq!(
             parse_override(Some("copy")).unwrap(),
-            Some(CopyStrategy::Tree)
+            Some(CopyStrategy::Copy)
         );
     }
 
@@ -563,25 +711,22 @@ mod tests {
     }
 
     #[test]
-    fn empty_repositories_fall_back_to_a_full_copy() {
+    fn empty_repositories_fail_hard_for_explicit_worktree() {
         let fixture = RepoFixture::new("pithos-test-tier-empty");
         fixture.init_repo();
         fixture.write("only.txt", "never committed");
 
-        let used = populate_sandbox(
+        let result = populate_sandbox(
             &fixture.source,
             fixture.sandbox.path(),
             &[],
             Some(CopyStrategy::Worktree),
-        )
-        .unwrap();
-
-        assert_eq!(used, CopyStrategy::Tree);
-        assert_trees_equal(&fixture.source, fixture.sandbox.path(), &[]);
+        );
+        assert!(result.is_err());
     }
 
     #[test]
-    fn submoduled_repositories_fall_back_to_a_full_copy() {
+    fn submoduled_repositories_fail_hard_for_explicit_worktree() {
         let fixture = RepoFixture::new("pithos-test-tier-submodules");
         fixture.init_repo();
         fixture.write("app/main.rs", "fn main() {}");
@@ -590,16 +735,13 @@ mod tests {
 
         assert!(!worktree_eligible(&fixture.source));
 
-        let used = populate_sandbox(
+        let result = populate_sandbox(
             &fixture.source,
             fixture.sandbox.path(),
             &[],
             Some(CopyStrategy::Worktree),
-        )
-        .unwrap();
-
-        assert_eq!(used, CopyStrategy::Tree);
-        assert_trees_equal(&fixture.source, fixture.sandbox.path(), &[]);
+        );
+        assert!(result.is_err());
     }
 
     #[test]

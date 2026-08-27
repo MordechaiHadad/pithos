@@ -4,15 +4,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use indicatif::ProgressStyle;
+use tracing::Metadata;
+use tracing::Subscriber;
 use tracing_indicatif::IndicatifLayer;
 use tracing_indicatif::filter::IndicatifFilter;
 use tracing_indicatif::span_ext::IndicatifSpanExt;
 use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing::Metadata;
-use tracing::Subscriber;
 use tracing_subscriber::layer::{Context, Filter};
 use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan, layer::Layer};
 
 pub(crate) fn is_progress_enabled() -> bool {
@@ -37,16 +37,17 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn enabled(&self, meta: &Metadata, cx: &Context<S>) -> bool {
-        if meta.is_event() && meta.name() == "close"
+        if meta.is_event()
+            && meta.name() == "close"
             && let Some(current) = cx.lookup_current()
-                && current
-                    .metadata()
-                    .fields()
-                    .field("indicatif.pb_show")
-                    .is_some()
-                {
-                    return false;
-                }
+            && current
+                .metadata()
+                .fields()
+                .field("indicatif.pb_show")
+                .is_some()
+        {
+            return false;
+        }
         true
     }
 }
@@ -179,11 +180,18 @@ fn new_copy_progress(
     (progress, done, handle)
 }
 
-pub(crate) fn with_copy_progress<F>(f: F) -> eyre::Result<crate::sandbox::CopyStats>
+pub(crate) fn with_copy_progress<F>(
+    span_name: &str,
+    f: F,
+) -> eyre::Result<crate::sandbox::CopyStats>
 where
     F: FnOnce(&CopyProgress) -> eyre::Result<crate::sandbox::CopyStats>,
 {
-    let span = tracing::info_span!("copying workspace", indicatif.pb_show = true);
+    let span = tracing::info_span!(
+        "copying workspace",
+        tier = span_name,
+        indicatif.pb_show = true
+    );
     span.pb_set_style(&spinner_style());
     span.pb_set_message("preparing...");
     let _enter = span.enter();
@@ -294,9 +302,9 @@ where
     result
 }
 
-pub(crate) fn with_worktree_progress<F>(f: F) -> eyre::Result<crate::strategy::CopyStrategy>
+pub(crate) fn with_worktree_progress<F>(f: F) -> eyre::Result<crate::workspace::CopyStrategy>
 where
-    F: FnOnce() -> eyre::Result<crate::strategy::CopyStrategy>,
+    F: FnOnce() -> eyre::Result<crate::workspace::CopyStrategy>,
 {
     let span = tracing::info_span!("populating workspace (worktree)", indicatif.pb_show = true);
     span.pb_set_style(&spinner_style());
