@@ -325,6 +325,33 @@ credentials = true
 Claude Code treats positional arguments as prompts, so the default command is
 deliberately bare; the container already starts in the workspace directory.
 
+Harness definitions are stored in `harnesses/*.toml` and embedded into the
+binary during the Cargo build. The definition contains the install command,
+default command, and repeated `[[mount]]` entries. Each mount has a closed
+`type` (`credentials`, `state`, `config`, `ephemeral`, or `generated`) and an
+independent `access` (`ro`, `pinned`, `pinned_dir`, or `tmpfs`), plus a
+`host_base` such as `home`, `data:claude-code`, or `state:opencode`.
+
+Users can add or override harnesses without rebuilding Pithos by placing TOML
+files in `$XDG_CONFIG_HOME/pithos/harnesses/` (normally
+`~/.config/pithos/harnesses/`). User definitions take precedence over the
+embedded definitions with the same name. Invalid user files are ignored with
+a warning. A minimal custom harness is:
+
+```toml
+schema_version = 1
+name = "my-agent"
+install = "RUN npm install --global my-agent\n"
+command = ["my-agent"]
+
+[[mount]]
+host = ".my-agent"
+target = "/home/agent/.my-agent"
+type = "config"
+access = "ro"
+host_base = "home"
+```
+
 #### OpenCode paths
 
 OpenCode state lives under the host's XDG directories. Sessions mount

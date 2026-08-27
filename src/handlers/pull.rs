@@ -51,18 +51,18 @@ pub(crate) fn pull(
 /// session keeps running. Mirrors the close-time flow: detect changes,
 /// summarize, optionally review, then mirror the tree one way. The sandbox is
 /// never modified, so pulls can repeat as the agent keeps working.
-#[tracing::instrument(skip_all, fields(session = %session.id))]
+#[tracing::instrument(skip_all, fields(session = %session.identity.id))]
 fn pull_workspace(
     session: &registry::SessionRecord,
     target_override: Option<&Path>,
     options: PullOptions,
 ) -> Result<PullOutcome> {
     let target = resolve_pull_target(session, target_override)?;
-    let sandbox = session.sandbox_path.as_path();
+    let sandbox = session.paths.sandbox_path.as_path();
     if !sandbox.is_dir() {
         bail!("session workspace {} no longer exists", sandbox.display());
     }
-    let changed = has_changes(&target, sandbox, &session.unmanaged)?;
+    let changed = has_changes(&target, sandbox, &session.options.unmanaged)?;
     if !options.json && !changed.is_empty() {
         summarize(&changed, &target, sandbox);
     }
@@ -71,7 +71,7 @@ fn pull_workspace(
     if !changed.is_empty() && !options.dry_run {
         match decide_review(options.auto_yes, options.auto_no, io::stdin().is_terminal())? {
             ReviewDecision::Apply => {
-                apply_with_progress(sandbox, &target, &session.unmanaged, method)?;
+                apply_with_progress(sandbox, &target, &session.options.unmanaged, method)?;
                 applied = true;
             }
             ReviewDecision::Decline => {}
@@ -84,12 +84,12 @@ fn pull_workspace(
                     &changed,
                     &target,
                     sandbox,
-                    session.diff_viewer.as_deref(),
-                    &session.unmanaged,
+                    session.options.diff_viewer.as_deref(),
+                    &session.options.unmanaged,
                     &mut session_view,
                 )?;
                 if applied {
-                    apply_with_progress(sandbox, &target, &session.unmanaged, method)?;
+                    apply_with_progress(sandbox, &target, &session.options.unmanaged, method)?;
                 }
             }
         }
@@ -99,7 +99,7 @@ fn pull_workspace(
 }
 
 fn copy_method_for_session(session: &registry::SessionRecord) -> CopyMethod {
-    match session.strategy.as_deref() {
+    match session.options.strategy.as_deref() {
         Some(label) => match parse_override(Some(label)) {
             Ok(Some(strategy)) => strategy.copy_method(),
             _ => match label {
@@ -145,7 +145,7 @@ fn resolve_pull_target(
     override_path: Option<&Path>,
 ) -> Result<PathBuf> {
     let Some(path) = override_path else {
-        let target = session.repo_path.clone();
+        let target = session.paths.repo_path.clone();
         if !target.is_dir() {
             bail!("repository {} no longer exists", target.display());
         }
@@ -209,7 +209,7 @@ fn emit_pull_report(
     options: PullOptions,
 ) -> Result<()> {
     if options.json {
-        let report = build_pull_report(&session.id, sandbox, target, changed, applied);
+        let report = build_pull_report(&session.identity.id, sandbox, target, changed, applied);
         let rendered =
             serde_json::to_string_pretty(&report).wrap_err("cannot serialize pull report")?;
         println!("{rendered}");
@@ -240,18 +240,27 @@ mod tests {
 
     fn pull_record(repo: &Path, sandbox: &Path, unmanaged: &[&str]) -> registry::SessionRecord {
         registry::SessionRecord {
-            id: "test-0001".to_string(),
-            container_name: "pithos-test-0001".to_string(),
-            sandbox_path: sandbox.to_path_buf(),
-            repo_path: repo.to_path_buf(),
-            image_tag: "localhost/pithos-opencode:latest".to_string(),
-            workspace: "/workspace".to_string(),
-            user: "1000:1000".to_string(),
-            unmanaged: unmanaged.iter().map(|path| path.to_string()).collect(),
-            diff_viewer: None,
-            strategy: None,
-            pid: 0,
-            started_at: 0,
+            identity: registry::SessionIdentity {
+                id: "test-0001".to_string(),
+                container_name: "pithos-test-0001".to_string(),
+            },
+            paths: registry::SessionPaths {
+                sandbox_path: sandbox.to_path_buf(),
+                repo_path: repo.to_path_buf(),
+            },
+            runtime: registry::SessionRuntime {
+                image_tag: "localhost/pithos-opencode:latest".to_string(),
+                workspace: "/workspace".to_string(),
+                user: "1000:1000".to_string(),
+            },
+            options: registry::SessionOptions {
+                unmanaged: unmanaged.iter().map(|path| path.to_string()).collect(),
+                ..Default::default()
+            },
+            lifecycle: registry::SessionLifecycle {
+                pid: 0,
+                started_at: 0,
+            },
         }
     }
 
@@ -358,7 +367,7 @@ mod tests {
         write(sandbox.path(), "sub/file.txt", "from sandbox");
         write(checkout.path(), "nested/deeper/stale.txt", "delete me");
         let mut record = pull_record(checkout.path(), sandbox.path(), &[]);
-        record.repo_path = checkout.path().join("elsewhere");
+        record.paths.repo_path = checkout.path().join("elsewhere");
 
         let outcome = pull_workspace(
             &record,
@@ -388,7 +397,7 @@ mod tests {
         let sandbox = TempDir::create("pithos-pull-missing-sandbox").unwrap();
         let missing_repo_record = {
             let mut record = pull_record(repo.path(), sandbox.path(), &[]);
-            record.repo_path = repo.path().join("gone");
+            record.paths.repo_path = repo.path().join("gone");
             record
         };
         assert!(

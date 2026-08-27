@@ -1,0 +1,102 @@
+schema_version = 1
+name = "opencode"
+install = "RUN npm install --global opencode-ai\n"
+
+# Credentials: gated on credentials = true, read-only
+[[mount]]
+host = ".local/share/opencode/auth.json"
+target = "/home/agent/.local/share/opencode/auth.json"
+type = "credentials"
+access = "ro"
+host_base = "home"
+
+# State: pinned files that survive across sessions
+[[mount]]
+host = "opencode.db"
+target = "/home/agent/.local/share/opencode/opencode.db"
+type = "state"
+access = "pinned"
+host_base = "data:opencode"
+
+[[mount]]
+host = "opencode.db-wal"
+target = "/home/agent/.local/share/opencode/opencode.db-wal"
+type = "state"
+access = "pinned"
+host_base = "data:opencode"
+
+[[mount]]
+host = "opencode.db-shm"
+target = "/home/agent/.local/share/opencode/opencode.db-shm"
+type = "state"
+access = "pinned"
+host_base = "data:opencode"
+
+[[mount]]
+host = "kv.json"
+target = "/home/agent/.local/state/opencode/kv.json"
+type = "state"
+access = "pinned"
+host_base = "state:opencode"
+
+[[mount]]
+host = "session.json"
+target = "/home/agent/.local/state/opencode/session.json"
+type = "state"
+access = "pinned"
+host_base = "state:opencode"
+
+[[mount]]
+host = "model.json"
+target = "/home/agent/.local/state/opencode/model.json"
+type = "state"
+access = "pinned"
+host_base = "state:opencode"
+
+[[mount]]
+host = "prompt-history.jsonl"
+target = "/home/agent/.local/state/opencode/prompt-history.jsonl"
+type = "state"
+access = "pinned"
+host_base = "state:opencode"
+
+# Config: read-only when exists, required if credentials or allowlist present
+[[mount]]
+host = ".config/opencode"
+target = "/home/agent/.config/opencode"
+type = "config"
+access = "ro"
+host_base = "home"
+
+# Ephemeral: tmpfs churn mounts
+[[mount]]
+host = ""
+target = "/home/agent/.local/share/opencode"
+type = "ephemeral"
+access = "tmpfs"
+host_base = "home"
+
+[[mount]]
+host = ""
+target = "/home/agent/.local/state/opencode"
+type = "ephemeral"
+access = "tmpfs"
+host_base = "home"
+
+[[mount]]
+host = ""
+target = "/home/agent/.cache"
+type = "ephemeral"
+access = "tmpfs"
+host_base = "home"
+
+[[mount]]
+host = ""
+target = "/home/agent/.serena"
+type = "ephemeral"
+access = "tmpfs"
+host_base = "home"
+
+[allowlist]
+translation = "passthrough_env"
+env_var = "OPENCODE_CONFIG_CONTENT"

@@ -7,58 +7,101 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SessionRecord {
+    #[serde(flatten)]
+    pub(crate) identity: SessionIdentity,
+    #[serde(flatten)]
+    pub(crate) paths: SessionPaths,
+    #[serde(flatten)]
+    pub(crate) runtime: SessionRuntime,
+    #[serde(flatten)]
+    pub(crate) options: SessionOptions,
+    #[serde(flatten)]
+    pub(crate) lifecycle: SessionLifecycle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SessionIdentity {
     pub(crate) id: String,
     pub(crate) container_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SessionPaths {
     pub(crate) sandbox_path: PathBuf,
     pub(crate) repo_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SessionRuntime {
     pub(crate) image_tag: String,
     pub(crate) workspace: String,
     pub(crate) user: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub(crate) struct SessionOptions {
     #[serde(default)]
     pub(crate) unmanaged: Vec<String>,
     #[serde(default)]
     pub(crate) diff_viewer: Option<String>,
     #[serde(default)]
     pub(crate) strategy: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SessionLifecycle {
     pub(crate) pid: u32,
     pub(crate) started_at: u64,
 }
 
 impl SessionRecord {
-    pub(crate) fn new(
-        repository: &Path,
-        sandbox_path: &Path,
-        image_tag: &str,
-        workspace: &str,
-        user: &str,
-        unmanaged: Vec<String>,
-        diff_viewer: Option<String>,
-        strategy: Option<crate::workspace::CopyStrategy>,
-    ) -> Self {
+    pub(crate) fn new(input: SessionRecordInput<'_>) -> Self {
+        let repository = input.repository;
         let repo_name = repository
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "repo".to_string());
         let id = format!("{}-{}", sanitize_name(&repo_name), random_suffix());
         Self {
-            container_name: format!("pithos-{id}"),
-            id,
-            sandbox_path: sandbox_path.to_path_buf(),
-            repo_path: repository.to_path_buf(),
-            image_tag: image_tag.to_string(),
-            workspace: workspace.to_string(),
-            user: user.to_string(),
-            unmanaged,
-            diff_viewer,
-            strategy: strategy.map(|s| s.label().to_string()),
-            pid: std::process::id(),
-            started_at: unix_now(),
+            identity: SessionIdentity {
+                container_name: format!("pithos-{id}"),
+                id,
+            },
+            paths: SessionPaths {
+                sandbox_path: input.sandbox_path.to_path_buf(),
+                repo_path: repository.to_path_buf(),
+            },
+            runtime: SessionRuntime {
+                image_tag: input.image_tag.to_string(),
+                workspace: input.workspace.to_string(),
+                user: input.user.to_string(),
+            },
+            options: SessionOptions {
+                unmanaged: input.unmanaged,
+                diff_viewer: input.diff_viewer,
+                strategy: input.strategy.map(|s| s.label().to_string()),
+            },
+            lifecycle: SessionLifecycle {
+                pid: std::process::id(),
+                started_at: unix_now(),
+            },
         }
     }
 
     pub(crate) fn save(&self) -> Result<()> {
         save_in(&runtime_dir(), self)
     }
+}
+
+pub(crate) struct SessionRecordInput<'a> {
+    pub(crate) repository: &'a Path,
+    pub(crate) sandbox_path: &'a Path,
+    pub(crate) image_tag: &'a str,
+    pub(crate) workspace: &'a str,
+    pub(crate) user: &'a str,
+    pub(crate) unmanaged: Vec<String>,
+    pub(crate) diff_viewer: Option<String>,
+    pub(crate) strategy: Option<crate::workspace::CopyStrategy>,
 }
 
 pub(crate) fn list() -> Vec<SessionRecord> {
@@ -68,7 +111,7 @@ pub(crate) fn list() -> Vec<SessionRecord> {
 pub(crate) fn sandbox_paths() -> Vec<PathBuf> {
     list()
         .into_iter()
-        .map(|record| record.sandbox_path)
+        .map(|record| record.paths.sandbox_path)
         .collect()
 }
 
@@ -85,8 +128,8 @@ pub(crate) fn prune() -> Result<Vec<SessionRecord>> {
     let mut live = Vec::with_capacity(sessions.len());
     for session in sessions {
         if is_stale(&session, &running) {
-            tracing::debug!(id = %session.id, "pruning stale session record");
-            remove(&session.id);
+            tracing::debug!(id = %session.identity.id, "pruning stale session record");
+            remove(&session.identity.id);
         } else {
             live.push(session);
         }
@@ -95,7 +138,7 @@ pub(crate) fn prune() -> Result<Vec<SessionRecord>> {
 }
 
 pub(crate) fn is_stale(record: &SessionRecord, running_names: &[String]) -> bool {
-    !running_names.contains(&record.container_name)
+    !running_names.contains(&record.identity.container_name)
 }
 
 pub(crate) fn resolve(
@@ -105,19 +148,22 @@ pub(crate) fn resolve(
     match sessions.len() {
         0 => bail!("no running pithos sessions"),
         1 => {
-            let session = &sessions[0];
+            let session = sessions.first().expect("session count is one");
             if let Some(requested) = requested
-                && session.id != requested
+                && session.identity.id != requested
             {
                 bail!(
                     "no session named \"{requested}\"; running session is \"{}\"",
-                    session.id
+                    session.identity.id
                 );
             }
             Ok(session.clone())
         }
         _ => {
-            let ids: Vec<&str> = sessions.iter().map(|session| session.id.as_str()).collect();
+            let ids: Vec<&str> = sessions
+                .iter()
+                .map(|session| session.identity.id.as_str())
+                .collect();
             let Some(requested) = requested else {
                 bail!(
                     "multiple pithos sessions are running; pick one with its id: {}",
@@ -126,7 +172,7 @@ pub(crate) fn resolve(
             };
             sessions
                 .iter()
-                .find(|session| session.id == requested)
+                .find(|session| session.identity.id == requested)
                 .cloned()
                 .ok_or_else(|| {
                     eyre!(
@@ -142,8 +188,9 @@ fn save_in(dir: &Path, record: &SessionRecord) -> Result<()> {
     fs::create_dir_all(dir).wrap_err("cannot create pithos runtime directory")?;
     let contents =
         serde_json::to_string_pretty(record).wrap_err("cannot serialize session record")?;
-    fs::write(record_path(dir, &record.id), contents).wrap_err("cannot write session record")?;
-    tracing::debug!(id = %record.id, "saved session record");
+    fs::write(record_path(dir, &record.identity.id), contents)
+        .wrap_err("cannot write session record")?;
+    tracing::debug!(id = %record.identity.id, "saved session record");
     Ok(())
 }
 
@@ -164,9 +211,10 @@ fn list_in(dir: &Path) -> Vec<SessionRecord> {
         }
     }
     sessions.sort_by(|left, right| {
-        left.started_at
-            .cmp(&right.started_at)
-            .then_with(|| left.id.cmp(&right.id))
+        left.lifecycle
+            .started_at
+            .cmp(&right.lifecycle.started_at)
+            .then_with(|| left.identity.id.cmp(&right.identity.id))
     });
     sessions
 }
@@ -248,18 +296,24 @@ mod tests {
 
     fn sample_record(id: &str, started_at: u64) -> SessionRecord {
         SessionRecord {
-            id: id.to_string(),
-            container_name: format!("pithos-{id}"),
-            sandbox_path: PathBuf::from("/tmp/sandbox"),
-            repo_path: PathBuf::from("/tmp/repo"),
-            image_tag: "localhost/pithos-opencode:latest".to_string(),
-            workspace: "/workspace".to_string(),
-            user: "1000:1000".to_string(),
-            unmanaged: Vec::new(),
-            diff_viewer: None,
-            strategy: None,
-            pid: 42,
-            started_at,
+            identity: SessionIdentity {
+                id: id.to_string(),
+                container_name: format!("pithos-{id}"),
+            },
+            paths: SessionPaths {
+                sandbox_path: PathBuf::from("/tmp/sandbox"),
+                repo_path: PathBuf::from("/tmp/repo"),
+            },
+            runtime: SessionRuntime {
+                image_tag: "localhost/pithos-opencode:latest".to_string(),
+                workspace: "/workspace".to_string(),
+                user: "1000:1000".to_string(),
+            },
+            options: SessionOptions::default(),
+            lifecycle: SessionLifecycle {
+                pid: 42,
+                started_at,
+            },
         }
     }
 
@@ -272,26 +326,26 @@ mod tests {
         let sessions = list_in(dir.path());
 
         assert_eq!(sessions.len(), 2);
-        assert_eq!(sessions[0].id, "a-0001");
-        assert_eq!(sessions[1].started_at, 200);
-        assert_eq!(sessions[1].container_name, "pithos-b-0002");
-        assert_eq!(sessions[1].user, "1000:1000");
-        assert_eq!(sessions[1].workspace, "/workspace");
+        assert_eq!(sessions[0].identity.id, "a-0001");
+        assert_eq!(sessions[1].lifecycle.started_at, 200);
+        assert_eq!(sessions[1].identity.container_name, "pithos-b-0002");
+        assert_eq!(sessions[1].runtime.user, "1000:1000");
+        assert_eq!(sessions[1].runtime.workspace, "/workspace");
     }
 
     #[test]
     fn round_trip_preserves_pull_settings() {
         let dir = TempDir::create("pithos-registry-pull-fields").unwrap();
         let mut record = sample_record("pull-0001", 10);
-        record.unmanaged = vec!["target".to_string()];
-        record.diff_viewer = Some("difftool -dir {dir}".to_string());
+        record.options.unmanaged = vec!["target".to_string()];
+        record.options.diff_viewer = Some("difftool -dir {dir}".to_string());
         save_in(dir.path(), &record).unwrap();
 
         let sessions = list_in(dir.path());
 
-        assert_eq!(sessions[0].unmanaged, vec!["target".to_string()]);
+        assert_eq!(sessions[0].options.unmanaged, vec!["target".to_string()]);
         assert_eq!(
-            sessions[0].diff_viewer.as_deref(),
+            sessions[0].options.diff_viewer.as_deref(),
             Some("difftool -dir {dir}")
         );
     }
@@ -306,7 +360,10 @@ mod tests {
         let sessions = list_in(dir.path());
 
         assert_eq!(
-            sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            sessions
+                .iter()
+                .map(|s| s.identity.id.as_str())
+                .collect::<Vec<_>>(),
             ["good"]
         );
     }
@@ -321,7 +378,10 @@ mod tests {
 
         let sessions = list_in(dir.path());
         assert_eq!(
-            sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            sessions
+                .iter()
+                .map(|s| s.identity.id.as_str())
+                .collect::<Vec<_>>(),
             ["keep"]
         );
     }
@@ -337,9 +397,9 @@ mod tests {
     #[test]
     fn resolve_auto_picks_single_session() {
         let sessions = vec![sample_record("only-0001", 0)];
-        assert_eq!(resolve(&sessions, None).unwrap().id, "only-0001");
+        assert_eq!(resolve(&sessions, None).unwrap().identity.id, "only-0001");
         assert_eq!(
-            resolve(&sessions, Some("only-0001")).unwrap().id,
+            resolve(&sessions, Some("only-0001")).unwrap().identity.id,
             "only-0001"
         );
         assert!(resolve(&sessions, Some("other")).is_err());
@@ -351,7 +411,10 @@ mod tests {
         let error = resolve(&sessions, None).unwrap_err().to_string();
         assert!(error.contains("a-0001"));
         assert!(error.contains("b-0002"));
-        assert_eq!(resolve(&sessions, Some("b-0002")).unwrap().id, "b-0002");
+        assert_eq!(
+            resolve(&sessions, Some("b-0002")).unwrap().identity.id,
+            "b-0002"
+        );
         assert!(resolve(&sessions, Some("c-0003")).is_err());
     }
 
@@ -372,20 +435,23 @@ mod tests {
         let repository = TempDir::create("pithos-registry-new").unwrap();
         let sandbox = TempDir::create("pithos-registry-new-sandbox").unwrap();
 
-        let record = SessionRecord::new(
-            repository.path(),
-            sandbox.path(),
-            "localhost/pithos-opencode:latest",
-            "/workspace",
-            "1000:1000",
-            vec!["target".to_string()],
-            Some("difftool -dir {dir}".to_string()),
-            Some(crate::workspace::CopyStrategy::Copy),
-        );
+        let record = SessionRecord::new(SessionRecordInput {
+            repository: repository.path(),
+            sandbox_path: sandbox.path(),
+            image_tag: "localhost/pithos-opencode:latest",
+            workspace: "/workspace",
+            user: "1000:1000",
+            unmanaged: vec!["target".to_string()],
+            diff_viewer: Some("difftool -dir {dir}".to_string()),
+            strategy: Some(crate::workspace::CopyStrategy::Copy),
+        });
 
-        assert!(record.id.starts_with("pithos-registry-new-"));
-        assert_eq!(record.container_name, format!("pithos-{}", record.id));
-        assert_eq!(record.sandbox_path, sandbox.path());
-        assert_eq!(record.user, "1000:1000");
+        assert!(record.identity.id.starts_with("pithos-registry-new-"));
+        assert_eq!(
+            record.identity.container_name,
+            format!("pithos-{}", record.identity.id)
+        );
+        assert_eq!(record.paths.sandbox_path, sandbox.path());
+        assert_eq!(record.runtime.user, "1000:1000");
     }
 }

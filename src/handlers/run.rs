@@ -68,11 +68,11 @@ fn run_session(
         console::style("✓").green().bold(),
         started.elapsed().as_secs_f64(),
         console::style("Session").dim(),
-        console::style(&record.id).cyan().bold(),
+        console::style(&record.identity.id).cyan().bold(),
         console::style("Workspace").dim(),
         console::style(workspace_name).cyan(),
         console::style("Tip").yellow().bold(),
-        console::style(&record.id).cyan()
+        console::style(&record.identity.id).cyan()
     );
     let mut command = Command::new("podman");
     command.arg("run");
@@ -89,7 +89,7 @@ fn run_session(
         "--security-opt=no-new-privileges",
         "--userns=keep-id",
         "--name",
-        &record.container_name,
+        &record.identity.container_name,
     ]);
     if config.networking.enabled {
         command.args(["--cap-add=NET_ADMIN"]);
@@ -138,7 +138,7 @@ fn run_session(
             command.args(["--env", &format!("{key}={value}")]);
         }
     }
-    config.harness.mount(&mut command, &record.id)?;
+    config.harness.mount(&mut command, &record.identity.id)?;
     config.networking.apply_to_resolved(
         &mut command,
         &whitelist_addresses.0,
@@ -153,7 +153,10 @@ fn run_session(
             }
         }
     }
-    crate::networking::enforcement::spawn_check(&config.networking, record.container_name.clone());
+    crate::networking::enforcement::spawn_check(
+        &config.networking,
+        record.identity.container_name.clone(),
+    );
     tracing::debug!(?command, "starting harness container");
     let mut child = command
         .arg(config.image_tag())
@@ -162,7 +165,7 @@ fn run_session(
     tracing::debug!(pid = child.id(), "harness container handed off to podman");
     let status = child.wait().wrap_err("could not wait for podman run")?;
     tracing::debug!(%status, "harness container exited");
-    registry::remove(&record.id);
+    registry::remove(&record.identity.id);
     let changed = has_changes(repository, sandbox.path(), &unmanaged_paths)?;
     tracing::trace!(changed = changed.len(), "change detection finished");
     let apply = if auto_yes {
@@ -283,16 +286,16 @@ fn prepare_workspace(
     let gid = crate::platform::current_gid();
     let current_user = format!("{uid}:{gid}");
     let unmanaged_paths = session::unmanaged(config);
-    let record = registry::SessionRecord::new(
+    let record = registry::SessionRecord::new(registry::SessionRecordInput {
         repository,
-        sandbox.path(),
-        &config.image_tag(),
-        &config.workspace,
-        &current_user,
-        unmanaged_paths.clone(),
-        config.diff_viewer.clone(),
-        Some(strategy),
-    );
+        sandbox_path: sandbox.path(),
+        image_tag: &config.image_tag(),
+        workspace: &config.workspace,
+        user: &current_user,
+        unmanaged: unmanaged_paths.clone(),
+        diff_viewer: config.diff_viewer.clone(),
+        strategy: Some(strategy),
+    });
     let _span = tracing::debug_span!("save session record").entered();
     record.save()?;
     Ok(PreparedSession {

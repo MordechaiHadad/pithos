@@ -9,10 +9,10 @@ pub(crate) fn ps() -> Result<()> {
     for session in &sessions {
         println!(
             "{:<30} {:<24} {:>8}  {}",
-            session.id,
+            session.identity.id,
             repo_label(session),
-            uptime(unix_now(), session.started_at),
-            session.sandbox_path.display()
+            uptime(unix_now(), session.lifecycle.started_at),
+            session.paths.sandbox_path.display()
         );
     }
     Ok(())
@@ -20,10 +20,11 @@ pub(crate) fn ps() -> Result<()> {
 
 fn repo_label(session: &crate::registry::SessionRecord) -> String {
     session
+        .paths
         .repo_path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| session.repo_path.display().to_string())
+        .unwrap_or_else(|| session.paths.repo_path.display().to_string())
 }
 
 fn uptime(now: u64, started_at: u64) -> String {

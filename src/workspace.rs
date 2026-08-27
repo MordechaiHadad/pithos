@@ -104,12 +104,6 @@ pub(crate) fn worktree_volume_arg(repository: &Path, strategy: CopyStrategy) -> 
     }
 }
 
-/// Whether the source requires a git repository for the given strategy.
-#[allow(dead_code)]
-pub(crate) fn requires_git(strategy: CopyStrategy) -> bool {
-    matches!(strategy, CopyStrategy::Worktree)
-}
-
 /// Populates an empty sandbox directory using the forced strategy or, when
 /// none was configured, the auto-detected one. Returns the strategy that was
 /// actually applied. Forced strategies fail hard on unsupported platforms.
@@ -216,38 +210,6 @@ pub(crate) fn populate_sandbox(
         "workspace populated"
     );
     Ok(used)
-}
-
-/// Auto-mode wrapper that degrades worktree failures to plain copy.
-#[allow(dead_code)]
-pub(crate) fn populate_sandbox_auto_fallback(
-    source: &Path,
-    sandbox: &Path,
-    ignore: &[String],
-) -> Result<CopyStrategy> {
-    match populate_sandbox(source, sandbox, ignore, None) {
-        Ok(strategy) => Ok(strategy),
-        Err(error) => {
-            tracing::warn!(%error, "worktree population failed; falling back to full copy");
-            clear_directory(sandbox)?;
-            let stats = if crate::progress::is_progress_enabled() {
-                crate::progress::with_copy_progress("plain copy", |progress| {
-                    copy_tree(source, sandbox, ignore, CopyMethod::Copy, Some(progress))
-                })?
-            } else {
-                copy_tree(source, sandbox, ignore, CopyMethod::Copy, None)?
-            };
-            tracing::debug!(
-                files = stats.files,
-                cloned = stats.cloned,
-                symlinks = stats.symlinks,
-                directories = stats.directories,
-                bytes = stats.bytes,
-                "fallback tree copy finished"
-            );
-            Ok(CopyStrategy::Copy)
-        }
-    }
 }
 
 fn ensure_strategy_supported(source: &Path, strategy: CopyStrategy) -> Result<()> {

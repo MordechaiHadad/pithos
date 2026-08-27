@@ -1,0 +1,130 @@
+schema_version = 1
+name = "claude-code"
+install = "RUN npm install --global @anthropic-ai/claude-code\n"
+
+# Credentials: gated on credentials = true
+[[mount]]
+host = ".claude/.credentials.json"
+target = "/home/agent/.claude/.credentials.json"
+type = "credentials"
+access = "ro"
+host_base = "home"
+
+# State: pinned files / dirs
+[[mount]]
+host = "claude.json"
+target = "/home/agent/.claude.json"
+type = "state"
+access = "pinned"
+host_base = "data:claude-code"
+
+[[mount]]
+host = "projects"
+target = "/home/agent/.claude/projects"
+type = "state"
+access = "pinned_dir"
+host_base = "data:claude-code"
+
+[[mount]]
+host = "history.jsonl"
+target = "/home/agent/.claude/history.jsonl"
+type = "state"
+access = "pinned"
+host_base = "data:claude-code"
+
+# Ephemeral churn
+[[mount]]
+host = ""
+target = "/home/agent/.claude/todos"
+type = "ephemeral"
+access = "tmpfs"
+host_base = "home"
+
+[[mount]]
+host = ""
+target = "/home/agent/.claude/shell-snapshots"
+type = "ephemeral"
+access = "tmpfs"
+host_base = "home"
+
+[[mount]]
+host = ""
+target = "/home/agent/.claude/statsig"
+type = "ephemeral"
+access = "tmpfs"
+host_base = "home"
+
+# Generated: per-session settings.json from allowlist translation
+[[mount]]
+host = "claude-settings.json"
+target = "/home/agent/.claude/settings.json"
+type = "generated"
+access = "ro"
+host_base = "runtime"
+
+# Config: personal config that travels ro when exists
+[[mount]]
+host = ".claude/CLAUDE.md"
+target = "/home/agent/.claude/CLAUDE.md"
+type = "config"
+access = "ro"
+host_base = "home"
+
+[[mount]]
+host = ".claude/keybindings.json"
+target = "/home/agent/.claude/keybindings.json"
+type = "config"
+access = "ro"
+host_base = "home"
+
+[[mount]]
+host = ".claude/skills"
+target = "/home/agent/.claude/skills"
+type = "config"
+access = "ro"
+host_base = "home"
+
+[[mount]]
+host = ".claude/agents"
+target = "/home/agent/.claude/agents"
+type = "config"
+access = "ro"
+host_base = "home"
+
+[[mount]]
+host = ".claude/commands"
+target = "/home/agent/.claude/commands"
+type = "config"
+access = "ro"
+host_base = "home"
+
+[[mount]]
+host = ".claude/rules"
+target = "/home/agent/.claude/rules"
+type = "config"
+access = "ro"
+host_base = "home"
+
+[[mount]]
+host = ".claude/output-styles"
+target = "/home/agent/.claude/output-styles"
+type = "config"
+access = "ro"
+host_base = "home"
+
+[[mount]]
+host = ".claude/themes"
+target = "/home/agent/.claude/themes"
+type = "config"
+access = "ro"
+host_base = "home"
+
+[[mount]]
+host = ".claude/workflows"
+target = "/home/agent/.claude/workflows"
+type = "config"
+access = "ro"
+host_base = "home"
+
+[allowlist]
+translation = "claude_settings"

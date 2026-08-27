@@ -429,6 +429,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
             "#,
         );
         assert_eq!(config.toolchains, ["rust", "python"]);
@@ -442,6 +443,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [toolchain.golang]
             install = ["ca-certificates"]
@@ -463,6 +465,7 @@ mod tests {
             r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [toolchain.golang]
             run = ["install-go"]
@@ -489,6 +492,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [toolchain.golang]
             run = ["install-go"]
@@ -511,6 +515,7 @@ mod tests {
             r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [toolchain."bad name"]
             run = ["true"]
@@ -534,6 +539,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [toolchain.fullstack]
             includes = ["rust", "web"]
@@ -564,6 +570,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [toolchain.a]
             includes = ["b"]
@@ -592,6 +599,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [toolchain.loop]
             includes = ["loop"]
@@ -615,6 +623,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [toolchain.meta]
             includes = ["ghost"]
@@ -639,6 +648,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [toolchain.py]
             uv = [{ name = "" }]
@@ -660,6 +670,7 @@ mod tests {
             r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
             "#,
         );
         assert!(config.toolchains.is_empty());
@@ -671,6 +682,7 @@ mod tests {
             r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
             "#,
         );
         assert_eq!(config.install, ["git", "gcc", "libc6-dev", "ncurses-term"]);
@@ -684,6 +696,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [toolchain.golang]
             run = ["install-go"]
@@ -716,6 +729,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
             "#,
         )
         .unwrap();
@@ -735,6 +749,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
             "#,
         )
         .unwrap();
@@ -763,6 +778,7 @@ mod tests {
 
             [harness]
             name = "claude-code"
+            command = ["claude"]
             "#,
         );
         assert_eq!(config.image_tag(), "localhost/custom:v1");
@@ -786,6 +802,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
             "#,
         )
         .unwrap();
@@ -801,6 +818,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
             "#,
             )
             .validate()
@@ -813,6 +831,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
             "#,
             )
             .validate()
@@ -823,6 +842,7 @@ mod tests {
                 r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
             "#,
             )
             .validate()
@@ -833,6 +853,7 @@ mod tests {
                 r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [environment]
             TERM = "xterm-256color"
@@ -850,6 +871,7 @@ mod tests {
             r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
             "#,
         );
         assert!(config.networking.enabled);
@@ -866,6 +888,7 @@ mod tests {
             r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [networking]
             "#,
@@ -882,6 +905,7 @@ mod tests {
             r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [networking]
             quota = 102400
@@ -898,6 +922,7 @@ mod tests {
             r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [networking]
             enabled = false
@@ -913,6 +938,7 @@ mod tests {
                 r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [networking]
             payload_size = 0
@@ -927,6 +953,7 @@ mod tests {
                 r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [networking]
             quota = 0
@@ -941,6 +968,7 @@ mod tests {
                 r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [networking]
             payload_size = -1
@@ -957,6 +985,7 @@ mod tests {
                 r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [networking]
             quota = "100 mbytes"
@@ -973,6 +1002,7 @@ mod tests {
                 r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [networking]
             payload_size = 8
@@ -989,6 +1019,7 @@ mod tests {
             r#"
             [harness]
             name = "opencode"
+            command = ["opencode", "/workspace"]
 
             [networking]
             quota = 102400

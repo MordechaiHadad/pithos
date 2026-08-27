@@ -6,14 +6,14 @@ use crate::registry::{self, SessionRecord};
 
 pub(crate) fn resolve_session(session_id: Option<&str>) -> Result<SessionRecord> {
     let session = registry::resolve(&registry::prune()?, session_id)?;
-    tracing::debug!(id = %session.id, container = %session.container_name, "resolved session");
+    tracing::debug!(id = %session.identity.id, container = %session.identity.container_name, "resolved session");
     Ok(session)
 }
 
 pub(crate) fn push_target(command: &mut Command, session: &SessionRecord) {
-    command.args(["--workdir", &session.workspace]);
-    command.args(["--user", &session.user]);
-    command.arg(&session.container_name);
+    command.args(["--workdir", &session.runtime.workspace]);
+    command.args(["--user", &session.runtime.user]);
+    command.arg(&session.identity.container_name);
 }
 
 pub(crate) fn terminal_env_args(command: &mut Command) {

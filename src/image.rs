@@ -348,6 +348,7 @@ mod tests {
 
                 [harness]
                 name = "opencode"
+                command = ["opencode", "/workspace"]
 
                 [toolchain.rust]
                 install = ["gcc", "libc6-dev"]
@@ -365,6 +366,7 @@ mod tests {
 
                 [harness]
                 name = "opencode"
+                command = ["opencode", "/workspace"]
 
                 [toolchain.python]
                 mise = ["python", "uv"]
@@ -381,6 +383,7 @@ mod tests {
 
                 [harness]
                 name = "opencode"
+                command = ["opencode", "/workspace"]
                 "#,
             )
             .unwrap()
@@ -391,6 +394,7 @@ mod tests {
                 r#"
                 [harness]
                 name = "opencode"
+                command = ["opencode", "/workspace"]
 
                 [[uv]]
                 name = "serena-agent"
@@ -469,6 +473,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
             "#,
         )
         .unwrap();
@@ -494,6 +499,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
 
             [toolchain.rust]
             install = ["gcc", "libc6-dev"]
@@ -515,6 +521,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
             "#,
         )
         .unwrap();
@@ -540,6 +547,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
 
             [toolchain.lua]
             mise = ["stylua"]
@@ -559,6 +567,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
 
             [toolchain.runtime]
             install = ["curl", "ca-certificates", "git"]
@@ -591,6 +600,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
 
             [[downloads]]
             url = "https://example.com/install.sh"
@@ -655,6 +665,7 @@ mod tests {
             r#"
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
 
             [toolchain.lua]
             mise = ["lua"]
@@ -708,6 +719,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
 
             [toolchain.python]
             mise = ["python", "uv"]
@@ -733,6 +745,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
 
             [toolchain.golang]
             install = ["ca-certificates"]
@@ -758,6 +771,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
 
             [toolchain.golang]
             run = ["install-go"]
@@ -777,6 +791,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
 
             [toolchain.golang]
             run = ["install-go"]
@@ -802,6 +817,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
 
             [toolchain.web]
             npm = ["typescript"]
@@ -827,6 +843,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
 
             [toolchain.fullstack]
             includes = ["rust", "web"]
@@ -855,6 +872,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
 
             [toolchain.golang]
             run = ["install-go"]
@@ -895,6 +913,7 @@ mod tests {
             r#"
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
 
             [[downloads]]
             url = "https://deno.land/install.sh"
@@ -914,6 +933,7 @@ mod tests {
             r#"
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
 
             [[downloads]]
             url = "https://example.com/install.sh"
@@ -932,6 +952,7 @@ mod tests {
 
             [harness]
             name = "opencode"
+                command = ["opencode", "/workspace"]
             "#,
         )
         .unwrap();
