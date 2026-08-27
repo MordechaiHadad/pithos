@@ -1,9 +1,7 @@
 use clap::{ArgAction, Parser, Subcommand};
 use eyre::{Result, bail};
-use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan, prelude::*};
 
 mod agent;
 mod audio;
@@ -14,6 +12,7 @@ mod harness;
 mod image;
 mod networking;
 mod platform;
+mod progress;
 mod registry;
 mod sandbox;
 mod session;
@@ -87,7 +86,7 @@ fn main() -> ExitCode {
 
 fn execute() -> Result<()> {
     let cli = Cli::parse();
-    init_tracing(cli.verbose);
+    progress::init_tracing_with_progress(cli.verbose);
     spawn_signal_cleanup();
     if cli.yes && cli.no {
         bail!("--yes and --no cannot be combined")
@@ -144,29 +143,6 @@ fn spawn_signal_cleanup() {
 
 #[cfg(not(unix))]
 fn spawn_signal_cleanup() {}
-
-fn init_tracing(verbose: u8) {
-    let crate_name = env!("CARGO_CRATE_NAME");
-    let env_filter = if verbose > 0 {
-        match verbose {
-            1 => EnvFilter::new(format!("{crate_name}=debug")),
-            2 => EnvFilter::new(format!("{crate_name}=trace")),
-            _ => EnvFilter::new("trace"),
-        }
-    } else {
-        EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new(format!("warn,{crate_name}=info")))
-    };
-
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_target(false)
-                .with_span_events(FmtSpan::CLOSE),
-        )
-        .init();
-}
 
 #[cfg(test)]
 mod tests {

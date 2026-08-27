@@ -90,12 +90,12 @@ pub(crate) fn temporary_base() -> Result<PathBuf> {
 
 /// Aggregate outcome of a tree copy, reported at debug level for profiling.
 #[derive(Debug, Default)]
-struct CopyStats {
-    files: u64,
-    cloned: u64,
-    symlinks: u64,
-    directories: u64,
-    bytes: u64,
+pub(crate) struct CopyStats {
+    pub(crate) files: u64,
+    pub(crate) cloned: u64,
+    pub(crate) symlinks: u64,
+    pub(crate) directories: u64,
+    pub(crate) bytes: u64,
 }
 
 impl CopyStats {
@@ -129,17 +129,33 @@ pub(crate) enum CopiedEntry {
 
 pub(crate) fn copy_tree(source: &Path, destination: &Path, ignore: &[String]) -> Result<()> {
     let started = Instant::now();
-    let stats = copy_tree_at(source, destination, Path::new(""), ignore)?;
-    tracing::debug!(
-        files = stats.files,
-        cloned = stats.cloned,
-        symlinks = stats.symlinks,
-        directories = stats.directories,
-        bytes = stats.bytes,
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        "tree copy finished"
-    );
-    Ok(())
+    if crate::progress::is_progress_enabled() {
+        let stats = crate::progress::with_copy_progress(|progress| {
+            copy_tree_at_with_progress(source, destination, Path::new(""), ignore, Some(progress))
+        })?;
+        tracing::debug!(
+            files = stats.files,
+            cloned = stats.cloned,
+            symlinks = stats.symlinks,
+            directories = stats.directories,
+            bytes = stats.bytes,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "tree copy finished"
+        );
+        Ok(())
+    } else {
+        let stats = copy_tree_at(source, destination, Path::new(""), ignore)?;
+        tracing::debug!(
+            files = stats.files,
+            cloned = stats.cloned,
+            symlinks = stats.symlinks,
+            directories = stats.directories,
+            bytes = stats.bytes,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "tree copy finished"
+        );
+        Ok(())
+    }
 }
 
 fn copy_tree_at(
@@ -147,6 +163,16 @@ fn copy_tree_at(
     destination: &Path,
     relative: &Path,
     ignore: &[String],
+) -> Result<CopyStats> {
+    copy_tree_at_with_progress(source, destination, relative, ignore, None)
+}
+
+fn copy_tree_at_with_progress(
+    source: &Path,
+    destination: &Path,
+    relative: &Path,
+    ignore: &[String],
+    progress: Option<&crate::progress::CopyProgress>,
 ) -> Result<CopyStats> {
     fs::create_dir_all(destination)?;
     let mut stats = CopyStats {
@@ -169,21 +195,56 @@ fn copy_tree_at(
             files.push((source_path, destination_path));
         }
     }
-    let file_entries = files
-        .par_iter()
-        .map(|(source_path, destination_path)| {
-            copy_entry(source_path, destination_path, DestinationSafety::Fresh)
-        })
-        .collect::<Result<Vec<Option<CopiedEntry>>>>()?;
+    let file_entries = if let Some(progress_state) = progress {
+        files
+            .par_iter()
+            .map(|(source_path, destination_path)| {
+                let result = copy_entry(source_path, destination_path, DestinationSafety::Fresh);
+                if let Ok(Some(entry)) = &result {
+                    match entry {
+                        CopiedEntry::File { bytes, reflinked } => {
+                            progress_state.inc_file(*bytes, *reflinked);
+                        }
+                        CopiedEntry::Symlink => {
+                            progress_state.inc_symlink();
+                        }
+                    }
+                }
+                result
+            })
+            .collect::<Result<Vec<Option<CopiedEntry>>>>()?
+    } else {
+        files
+            .par_iter()
+            .map(|(source_path, destination_path)| {
+                copy_entry(source_path, destination_path, DestinationSafety::Fresh)
+            })
+            .collect::<Result<Vec<Option<CopiedEntry>>>>()?
+    };
     for entry in file_entries.into_iter().flatten() {
         stats.record_entry(entry);
     }
-    let subtree_stats = subdirectories
-        .par_iter()
-        .map(|(source_path, destination_path, child_relative)| {
-            copy_tree_at(source_path, destination_path, child_relative, ignore)
-        })
-        .collect::<Result<Vec<CopyStats>>>()?;
+    let subtree_stats = if let Some(progress_ref) = progress {
+        subdirectories
+            .par_iter()
+            .map(|(source_path, destination_path, child_relative)| {
+                copy_tree_at_with_progress(
+                    source_path,
+                    destination_path,
+                    child_relative,
+                    ignore,
+                    Some(progress_ref),
+                )
+            })
+            .collect::<Result<Vec<CopyStats>>>()?
+    } else {
+        subdirectories
+            .par_iter()
+            .map(|(source_path, destination_path, child_relative)| {
+                copy_tree_at(source_path, destination_path, child_relative, ignore)
+            })
+            .collect::<Result<Vec<CopyStats>>>()?
+    };
     for subtree in subtree_stats {
         stats.merge(subtree);
     }
@@ -390,7 +451,19 @@ fn same_file(first: &Path, second: &Path) -> Result<bool> {
 }
 
 pub(crate) fn apply_tree(source: &Path, destination: &Path, unmanaged: &[String]) -> Result<()> {
-    apply_tree_at(source, destination, Path::new(""), unmanaged)
+    if crate::progress::is_progress_enabled() {
+        crate::progress::with_apply_progress(|progress| {
+            apply_tree_at_with_progress(
+                source,
+                destination,
+                Path::new(""),
+                unmanaged,
+                Some(progress),
+            )
+        })
+    } else {
+        apply_tree_at(source, destination, Path::new(""), unmanaged)
+    }
 }
 
 fn apply_tree_at(
@@ -398,6 +471,16 @@ fn apply_tree_at(
     destination: &Path,
     relative: &Path,
     unmanaged: &[String],
+) -> Result<()> {
+    apply_tree_at_with_progress(source, destination, relative, unmanaged, None)
+}
+
+fn apply_tree_at_with_progress(
+    source: &Path,
+    destination: &Path,
+    relative: &Path,
+    unmanaged: &[String],
+    progress: Option<&crate::progress::CopyProgress>,
 ) -> Result<()> {
     for entry in fs::read_dir(destination)? {
         let entry = entry?;
@@ -420,9 +503,25 @@ fn apply_tree_at(
         let destination_path = destination.join(entry.file_name());
         if entry.file_type()?.is_dir() {
             fs::create_dir_all(&destination_path)?;
-            apply_tree_at(&source_path, &destination_path, &child_relative, unmanaged)?;
+            apply_tree_at_with_progress(
+                &source_path,
+                &destination_path,
+                &child_relative,
+                unmanaged,
+                progress,
+            )?;
         } else {
-            let _ = copy_entry(&source_path, &destination_path, DestinationSafety::Shared)?;
+            let result = copy_entry(&source_path, &destination_path, DestinationSafety::Shared)?;
+            if let (Some(progress_state), Some(entry)) = (progress, &result) {
+                match entry {
+                    CopiedEntry::File { bytes, reflinked } => {
+                        progress_state.inc_file(*bytes, *reflinked);
+                    }
+                    CopiedEntry::Symlink => {
+                        progress_state.inc_symlink();
+                    }
+                }
+            }
         }
     }
     Ok(())

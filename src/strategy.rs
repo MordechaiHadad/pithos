@@ -100,20 +100,36 @@ pub(crate) fn populate_sandbox(
         }),
     };
     let started = std::time::Instant::now();
-    let used = match requested {
-        CopyStrategy::Reflink | CopyStrategy::Tree => {
-            copy_tree(source, sandbox, ignore)?;
-            requested
-        }
-        CopyStrategy::Worktree => match populate_worktree(source, sandbox, ignore) {
-            Ok(()) => CopyStrategy::Worktree,
-            Err(error) => {
-                tracing::warn!(%error, "worktree population failed; falling back to full copy");
-                clear_directory(sandbox)?;
+    let used = if crate::progress::is_progress_enabled()
+        && matches!(requested, CopyStrategy::Worktree)
+    {
+        crate::progress::with_worktree_progress(|| {
+            Ok(match populate_worktree(source, sandbox, ignore) {
+                Ok(()) => CopyStrategy::Worktree,
+                Err(error) => {
+                    tracing::warn!(%error, "worktree population failed; falling back to full copy");
+                    clear_directory(sandbox)?;
+                    copy_tree(source, sandbox, ignore)?;
+                    CopyStrategy::Tree
+                }
+            })
+        })?
+    } else {
+        match requested {
+            CopyStrategy::Reflink | CopyStrategy::Tree => {
                 copy_tree(source, sandbox, ignore)?;
-                CopyStrategy::Tree
+                requested
             }
-        },
+            CopyStrategy::Worktree => match populate_worktree(source, sandbox, ignore) {
+                Ok(()) => CopyStrategy::Worktree,
+                Err(error) => {
+                    tracing::warn!(%error, "worktree population failed; falling back to full copy");
+                    clear_directory(sandbox)?;
+                    copy_tree(source, sandbox, ignore)?;
+                    CopyStrategy::Tree
+                }
+            },
+        }
     };
     tracing::debug!(
         strategy = used.label(),

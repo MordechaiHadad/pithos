@@ -139,12 +139,22 @@ impl Networking {
         } else {
             tracing::debug!("network cache miss");
         }
-        refresh_cache(&hosts)
+        if crate::progress::is_progress_enabled() && !hosts.is_empty() {
+            crate::progress::with_resolve_progress(hosts.len(), |progress| {
+                refresh_cache(&hosts, progress)
+            })
+        } else {
+            let mut none = None;
+            refresh_cache(&hosts, &mut none)
+        }
     }
 }
 
-fn refresh_cache(hosts: &[String]) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
-    let (v4, v6) = resolve_hosts(hosts);
+fn refresh_cache(
+    hosts: &[String],
+    progress: &mut Option<crate::progress::CountProgress>,
+) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
+    let (v4, v6) = resolve_hosts(hosts, progress);
     if !v4.is_empty() || !v6.is_empty() {
         let mut addresses = v4.iter().copied().map(IpAddr::V4).collect::<Vec<_>>();
         addresses.extend(v6.iter().copied().map(IpAddr::V6));
@@ -164,7 +174,8 @@ fn refresh_cache(hosts: &[String]) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
 fn spawn_cache_refresh(hosts: Vec<String>) {
     std::thread::spawn(move || {
         tracing::debug!("background network cache refresh started");
-        refresh_cache(&hosts);
+        let mut none = None;
+        refresh_cache(&hosts, &mut none);
     });
 }
 
@@ -228,10 +239,13 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[tracing::instrument(
     level = "debug",
-    skip(hosts),
+    skip(hosts, progress),
     fields(hosts = hosts.len())
 )]
-pub(crate) fn resolve_hosts(hosts: &[String]) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
+pub(crate) fn resolve_hosts(
+    hosts: &[String],
+    progress: &mut Option<crate::progress::CountProgress>,
+) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
     let deadline = Instant::now() + RESOLVE_TIMEOUT;
     let (tx, rx) = mpsc::channel::<(String, io::Result<Vec<SocketAddr>>)>();
     for host in hosts {
@@ -263,9 +277,15 @@ pub(crate) fn resolve_hosts(hosts: &[String]) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) 
                         IpAddr::V6(ip) => v6.push(ip),
                     }
                 }
+                if let Some(p) = progress.as_mut() {
+                    p.inc();
+                }
             }
             Ok((host, Err(_))) => {
                 eprintln!("warning: cannot resolve whitelist host {host}, skipping");
+                if let Some(p) = progress.as_mut() {
+                    p.inc();
+                }
             }
             Err(mpsc::RecvTimeoutError::Timeout) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 break;
@@ -298,10 +318,14 @@ mod tests {
 
     #[test]
     fn resolves_localhost_and_skips_unknown_hosts() {
-        let (v4, _v6) = resolve_hosts(&[
-            "localhost".to_string(),
-            "pithos-does-not-exist.example".to_string(),
-        ]);
+        let mut none = None;
+        let (v4, _v6) = resolve_hosts(
+            &[
+                "localhost".to_string(),
+                "pithos-does-not-exist.example".to_string(),
+            ],
+            &mut none,
+        );
         assert!(
             v4.contains(&Ipv4Addr::LOCALHOST),
             "expected localhost in {v4:?}"
