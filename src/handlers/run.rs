@@ -2,7 +2,6 @@ use eyre::{Result, WrapErr, eyre};
 use std::env;
 use std::path::Path;
 use std::process::Command;
-use tracing::info;
 
 use crate::config::Config;
 use crate::registry;
@@ -51,6 +50,7 @@ fn run_session(
     auto_yes: bool,
     auto_no: bool,
 ) -> Result<()> {
+    let started = std::time::Instant::now();
     let prepared = prepare_session(config, repository, forced_strategy)?;
     let PreparedSession {
         sandbox,
@@ -61,11 +61,21 @@ fn run_session(
         unmanaged_paths,
         whitelist_addresses,
     } = prepared;
-    info!(
-        "pithos session {}: inspect it live with `pithos shell {}` or open {} in your editor",
-        record.id,
-        record.id,
-        sandbox.path().display()
+    let workspace_name = sandbox
+        .path()
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| sandbox.path().display().to_string());
+    eprintln!(
+        "\n{} Pithos ready in {:.2}s\n\n{}   {}\n{} {}\n\n{}: pithos shell {}",
+        console::style("✓").green().bold(),
+        started.elapsed().as_secs_f64(),
+        console::style("Session").dim(),
+        console::style(&record.id).cyan().bold(),
+        console::style("Workspace").dim(),
+        console::style(workspace_name).cyan(),
+        console::style("Tip").yellow().bold(),
+        console::style(&record.id).cyan()
     );
     let mut command = Command::new("podman");
     command.arg("run");

@@ -9,6 +9,10 @@ use tracing_indicatif::filter::IndicatifFilter;
 use tracing_indicatif::span_ext::IndicatifSpanExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing::Metadata;
+use tracing::Subscriber;
+use tracing_subscriber::layer::{Context, Filter};
+use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan, layer::Layer};
 
 pub(crate) fn is_progress_enabled() -> bool {
@@ -24,6 +28,27 @@ pub(crate) fn is_progress_enabled() -> bool {
 pub(crate) fn spinner_style() -> ProgressStyle {
     ProgressStyle::with_template("{span_child_prefix}{spinner:.cyan} {span_name} {wide_msg}")
         .unwrap_or_else(|_| ProgressStyle::default_spinner())
+}
+
+struct HideProgressClose;
+
+impl<S> Filter<S> for HideProgressClose
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn enabled(&self, meta: &Metadata, cx: &Context<S>) -> bool {
+        if meta.is_event() && meta.name() == "close"
+            && let Some(current) = cx.lookup_current()
+                && current
+                    .metadata()
+                    .fields()
+                    .field("indicatif.pb_show")
+                    .is_some()
+                {
+                    return false;
+                }
+        true
+    }
 }
 
 pub(crate) fn init_tracing_with_progress(verbose: u8) {
@@ -55,8 +80,10 @@ pub(crate) fn init_tracing_with_progress(verbose: u8) {
         .with(
             tracing_subscriber::fmt::layer()
                 .with_target(false)
+                .with_ansi(true)
                 .with_span_events(FmtSpan::CLOSE)
-                .with_writer(indicatif_layer.get_stderr_writer()),
+                .with_writer(indicatif_layer.get_stderr_writer())
+                .with_filter(HideProgressClose),
         )
         .with(indicatif_layer.with_filter(filter));
 
