@@ -38,18 +38,35 @@ fn change_counts(changed: &[PathBuf], source: &Path, sandbox: &Path) -> (usize, 
     (added, modified, deleted)
 }
 
+fn style_for_kind(kind: ChangeKind) -> console::Style {
+    match kind {
+        ChangeKind::Added => console::Style::new().green(),
+        ChangeKind::Modified => console::Style::new().yellow(),
+        ChangeKind::Deleted => console::Style::new().red(),
+    }
+}
+
 pub(crate) fn summarize(changed: &[PathBuf], source: &Path, sandbox: &Path) {
     let (added, modified, deleted) = change_counts(changed, source, sandbox);
     let noun = if changed.len() == 1 { "file" } else { "files" };
     let mut breakdown = Vec::new();
     if added > 0 {
-        breakdown.push(format!("{added} added"));
+        breakdown.push(format!(
+            "{}",
+            console::style(format!("{added} added")).green()
+        ));
     }
     if modified > 0 {
-        breakdown.push(format!("{modified} modified"));
+        breakdown.push(format!(
+            "{}",
+            console::style(format!("{modified} modified")).yellow()
+        ));
     }
     if deleted > 0 {
-        breakdown.push(format!("{deleted} deleted"));
+        breakdown.push(format!(
+            "{}",
+            console::style(format!("{deleted} deleted")).red()
+        ));
     }
     let mut line = format!("{} {noun} changed", changed.len());
     if !breakdown.is_empty() {
@@ -57,7 +74,9 @@ pub(crate) fn summarize(changed: &[PathBuf], source: &Path, sandbox: &Path) {
     }
     println!("{line}");
     for relative in changed.iter().take(20) {
-        println!("  {}", relative.display());
+        let kind = change_kind(source, sandbox, relative);
+        let styled = style_for_kind(kind).apply_to(format!("  {}", relative.display()));
+        println!("{styled}");
     }
     if changed.len() > 20 {
         println!("  ... and {} more", changed.len() - 20);
@@ -214,14 +233,15 @@ fn print_diff(changed: &[PathBuf], source: &Path, sandbox: &Path) -> Result<()> 
             .unwrap_or(false);
 
         if source_is_dir || sandbox_is_dir {
-            let status = if source_is_dir && sandbox_is_dir {
-                "changed directory"
+            let (status, kind) = if source_is_dir && sandbox_is_dir {
+                ("changed directory", ChangeKind::Modified)
             } else if source_is_dir {
-                "removed directory"
+                ("removed directory", ChangeKind::Deleted)
             } else {
-                "added directory"
+                ("added directory", ChangeKind::Added)
             };
-            rendered.push_str(&format!("  {status}: {}\n", relative.display()));
+            let line = format!("  {status}: {}\n", relative.display());
+            rendered.push_str(&format!("{}", style_for_kind(kind).apply_to(line)));
         } else if source_is_link || sandbox_is_link {
             let target = |path: &Path, is_link: bool| {
                 if is_link {
@@ -236,28 +256,48 @@ fn print_diff(changed: &[PathBuf], source: &Path, sandbox: &Path) -> Result<()> 
                 target(&source_path, source_is_link),
                 target(&sandbox_path, sandbox_is_link),
             ) {
-                (Some(old), Some(new)) => rendered.push_str(&format!(
-                    "  symlink changed: {} ({} -> {})\n",
-                    relative.display(),
-                    old,
-                    new
-                )),
-                (Some(old), None) => rendered.push_str(&format!(
-                    "  removed symlink: {} (-> {})\n",
-                    relative.display(),
-                    old
-                )),
-                (None, Some(new)) => rendered.push_str(&format!(
-                    "  added symlink: {} (-> {})\n",
-                    relative.display(),
-                    new
-                )),
-                _ => rendered.push_str(&format!("  symlink changed: {}\n", relative.display())),
+                (Some(old), Some(new)) => {
+                    let line = format!(
+                        "  symlink changed: {} ({} -> {})\n",
+                        relative.display(),
+                        old,
+                        new
+                    );
+                    rendered.push_str(&format!(
+                        "{}",
+                        style_for_kind(ChangeKind::Modified).apply_to(line)
+                    ));
+                }
+                (Some(old), None) => {
+                    let line = format!("  removed symlink: {} (-> {})\n", relative.display(), old);
+                    rendered.push_str(&format!(
+                        "{}",
+                        style_for_kind(ChangeKind::Deleted).apply_to(line)
+                    ));
+                }
+                (None, Some(new)) => {
+                    let line = format!("  added symlink: {} (-> {})\n", relative.display(), new);
+                    rendered.push_str(&format!(
+                        "{}",
+                        style_for_kind(ChangeKind::Added).apply_to(line)
+                    ));
+                }
+                _ => {
+                    let line = format!("  symlink changed: {}\n", relative.display());
+                    rendered.push_str(&format!(
+                        "{}",
+                        style_for_kind(ChangeKind::Modified).apply_to(line)
+                    ));
+                }
             }
         } else {
             match file_diff(source, sandbox, relative)? {
                 Some(diff) => rendered.push_str(&diff),
-                None => rendered.push_str(&format!("  {}: diff unavailable\n", relative.display())),
+                None => {
+                    let kind = change_kind(source, sandbox, relative);
+                    let line = format!("  {}: diff unavailable\n", relative.display());
+                    rendered.push_str(&format!("{}", style_for_kind(kind).apply_to(line)));
+                }
             }
         }
     }

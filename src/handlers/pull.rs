@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::registry;
 use crate::sandbox::{CopyMethod, has_changes};
 use crate::session::{ChangeKind, change_kind, review, summarize};
+use crate::snapshot;
 use crate::workspace::parse_override;
 
 use super::common;
@@ -62,7 +63,7 @@ fn pull_workspace(
     if !sandbox.is_dir() {
         bail!("session workspace {} no longer exists", sandbox.display());
     }
-    let changed = has_changes(&target, sandbox, &session.options.unmanaged)?;
+    let changed = detect_changes(&target, sandbox, session)?;
     if !options.json && !changed.is_empty() {
         summarize(&changed, &target, sandbox);
     }
@@ -95,7 +96,42 @@ fn pull_workspace(
         }
     }
     emit_pull_report(session, &target, sandbox, &changed, applied, options)?;
+    if applied {
+        let _ = update_snapshot(session, sandbox);
+    }
     Ok(PullOutcome { target, applied })
+}
+
+fn detect_changes(
+    target: &Path,
+    sandbox: &Path,
+    session: &registry::SessionRecord,
+) -> Result<Vec<PathBuf>> {
+    if let Ok(Some(changed)) = snapshot::try_has_changes_via_snapshot(
+        target,
+        sandbox,
+        &session.options.unmanaged,
+        session.options.strategy.as_deref(),
+        &session.identity.id,
+    ) {
+        tracing::debug!(changed = changed.len(), "snapshot pull detection succeeded");
+        return Ok(changed);
+    }
+    tracing::debug!("snapshot fallback to full scan");
+    let changed = has_changes(target, sandbox, &session.options.unmanaged)?;
+    tracing::debug!(changed = changed.len(), "full scan pull detection finished");
+    Ok(changed)
+}
+
+fn update_snapshot(session: &registry::SessionRecord, sandbox: &Path) -> Result<()> {
+    let entries = snapshot::capture(sandbox, &session.options.unmanaged)?;
+    snapshot::save_snapshot(
+        &session.identity.id,
+        entries,
+        &session.options.unmanaged,
+        session.options.strategy.as_deref(),
+    )?;
+    Ok(())
 }
 
 fn copy_method_for_session(session: &registry::SessionRecord) -> CopyMethod {

@@ -117,6 +117,7 @@ pub(crate) fn sandbox_paths() -> Vec<PathBuf> {
 
 pub(crate) fn remove(id: &str) {
     remove_in(&runtime_dir(), id);
+    crate::snapshot::remove_snapshot(id);
 }
 
 pub(crate) fn prune() -> Result<Vec<SessionRecord>> {

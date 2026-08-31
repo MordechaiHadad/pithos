@@ -1,6 +1,6 @@
 use eyre::{Result, WrapErr, eyre};
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::Config;
@@ -31,6 +31,11 @@ pub(crate) fn run(
     {
         let _span = tracing::debug_span!("orphan sweep").entered();
         sweep_orphans(&registry::sandbox_paths())?;
+        let live_ids: Vec<String> = registry::list()
+            .into_iter()
+            .map(|record| record.identity.id)
+            .collect();
+        let _ = crate::snapshot::sweep_manifests(&live_ids);
     }
     run_session(&config, &repository, forced_strategy, auto_yes, auto_no)
 }
@@ -166,7 +171,16 @@ fn run_session(
     let status = child.wait().wrap_err("could not wait for podman run")?;
     tracing::debug!(%status, "harness container exited");
     registry::remove(&record.identity.id);
-    let changed = has_changes(repository, sandbox.path(), &unmanaged_paths)?;
+    let changed = detect_changes_with_snapshot(
+        repository,
+        sandbox.path(),
+        &unmanaged_paths,
+        &record.identity.id,
+        &record.options.strategy,
+    )?;
+    if !changed.is_empty() {
+        tracing::debug!(changed = changed.len(), "updating snapshot before review");
+    }
     tracing::trace!(changed = changed.len(), "change detection finished");
     let apply = if auto_yes {
         true
@@ -205,6 +219,14 @@ fn run_session(
         } else {
             crate::sandbox::apply_tree(sandbox.path(), repository, &unmanaged_paths, method, None)?;
         }
+        let _ = update_snapshot(
+            &record.identity.id,
+            sandbox.path(),
+            &unmanaged_paths,
+            strategy.label(),
+        );
+    } else {
+        crate::snapshot::remove_snapshot(&record.identity.id);
     }
     if !status.success() {
         eyre::bail!("harness exited with {status}")
@@ -298,6 +320,12 @@ fn prepare_workspace(
     });
     let _span = tracing::debug_span!("save session record").entered();
     record.save()?;
+    let _ = update_snapshot(
+        &record.identity.id,
+        sandbox.path(),
+        &unmanaged_paths,
+        strategy.label(),
+    );
     Ok(PreparedSession {
         sandbox,
         record,
@@ -307,6 +335,46 @@ fn prepare_workspace(
         unmanaged_paths,
         whitelist_addresses: (Vec::new(), Vec::new()),
     })
+}
+
+fn detect_changes_with_snapshot(
+    repository: &Path,
+    sandbox: &Path,
+    unmanaged: &[String],
+    session_id: &str,
+    strategy: &Option<String>,
+) -> Result<Vec<PathBuf>> {
+    if let Ok(Some(changed)) = crate::snapshot::try_has_changes_via_snapshot(
+        repository,
+        sandbox,
+        unmanaged,
+        strategy.as_deref(),
+        session_id,
+    ) {
+        tracing::debug!(
+            changed = changed.len(),
+            "snapshot change detection succeeded"
+        );
+        return Ok(changed);
+    }
+    tracing::debug!("snapshot fallback to full scan");
+    let changed = has_changes(repository, sandbox, unmanaged)?;
+    tracing::debug!(
+        changed = changed.len(),
+        "full scan change detection finished"
+    );
+    Ok(changed)
+}
+
+fn update_snapshot(
+    session_id: &str,
+    sandbox: &Path,
+    unmanaged: &[String],
+    strategy_label: &str,
+) -> Result<()> {
+    let entries = crate::snapshot::capture(sandbox, unmanaged)?;
+    crate::snapshot::save_snapshot(session_id, entries, unmanaged, Some(strategy_label))?;
+    Ok(())
 }
 
 /// Package-manager state redirected into the ephemeral home so runtime

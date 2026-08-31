@@ -16,6 +16,7 @@ mod progress;
 mod registry;
 mod sandbox;
 mod session;
+mod snapshot;
 mod workspace;
 
 #[derive(Parser)]
