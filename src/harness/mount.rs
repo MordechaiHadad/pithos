@@ -95,6 +95,7 @@ pub fn apply_mounts(
                 }
                 if mount.mount_type == MountType::Config
                     && def.name == "opencode"
+                    && !mount.host.ends_with("plugins")
                     && !(credentials_enabled || allowlist.is_some())
                 {
                     continue;

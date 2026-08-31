@@ -68,6 +68,14 @@ type = "config"
 access = "ro"
 host_base = "home"
 
+# Plugins: global plugins always mounted when present (no credentials gate)
+[[mount]]
+host = ".config/opencode/plugins"
+target = "/home/agent/.config/opencode/plugins"
+type = "config"
+access = "ro"
+host_base = "home"
+
 # Ephemeral: tmpfs churn mounts
 [[mount]]
 host = ""
