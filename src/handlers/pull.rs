@@ -155,8 +155,8 @@ fn apply_with_progress(
     unmanaged: &[String],
     method: CopyMethod,
 ) -> Result<()> {
-    if crate::progress::is_progress_enabled() {
-        crate::progress::with_apply_progress(|progress| {
+    if crate::utils::progress::is_progress_enabled() {
+        crate::utils::progress::with_apply_progress(|progress| {
             crate::sandbox::apply_tree(sandbox, target, unmanaged, method, Some(progress))
         })
     } else {

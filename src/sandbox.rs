@@ -143,7 +143,7 @@ pub(crate) fn copy_tree(
     destination: &Path,
     ignore: &[String],
     method: CopyMethod,
-    progress: Option<&crate::progress::CopyProgress>,
+    progress: Option<&crate::utils::progress::CopyProgress>,
 ) -> Result<CopyStats> {
     let started = Instant::now();
     let stats =
@@ -171,7 +171,7 @@ fn copy_tree_at_with_progress(
     relative: &Path,
     ignore: &[String],
     method: CopyMethod,
-    progress: Option<&crate::progress::CopyProgress>,
+    progress: Option<&crate::utils::progress::CopyProgress>,
 ) -> Result<CopyStats> {
     fs::create_dir_all(destination)?;
     let mut stats = CopyStats {
@@ -261,7 +261,7 @@ pub(crate) fn copy_entry(
     let file_type = metadata.file_type();
     if file_type.is_symlink() {
         let target = fs::read_link(source)?;
-        crate::platform::symlink(&target, destination)?;
+        crate::utils::platform::symlink(&target, destination)?;
         Ok(Some(CopiedEntry::Symlink))
     } else if file_type.is_file() {
         let bytes = metadata.len();
@@ -466,7 +466,7 @@ pub(crate) fn apply_tree(
     destination: &Path,
     unmanaged: &[String],
     method: CopyMethod,
-    progress: Option<&crate::progress::CopyProgress>,
+    progress: Option<&crate::utils::progress::CopyProgress>,
 ) -> Result<()> {
     apply_tree_at_with_progress(
         source,
@@ -484,7 +484,7 @@ fn apply_tree_at_with_progress(
     relative: &Path,
     unmanaged: &[String],
     method: CopyMethod,
-    progress: Option<&crate::progress::CopyProgress>,
+    progress: Option<&crate::utils::progress::CopyProgress>,
 ) -> Result<()> {
     for entry in fs::read_dir(destination)? {
         let entry = entry?;
@@ -564,7 +564,7 @@ mod tests {
     fn make_symlink(root: &Path, relative: &str, target: &str) {
         let path = root.join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        crate::platform::symlink(Path::new(target), &path).unwrap();
+        crate::utils::platform::symlink(Path::new(target), &path).unwrap();
     }
 
     fn collect_all_relative(root: &Path) -> Vec<PathBuf> {

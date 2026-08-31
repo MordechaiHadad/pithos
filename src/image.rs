@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::process::Command;
 
-use crate::agent::{AGENT_HOME, AGENT_USER};
+use crate::utils::agent::{AGENT_HOME, AGENT_USER};
 use crate::config::{Config, Download, ToolchainDef, UvTool};
 use crate::sandbox::TempDir;
 
@@ -219,8 +219,8 @@ impl ToolchainDef {
 }
 
 fn agent_preamble() -> String {
-    let uid = crate::platform::current_uid();
-    let gid = crate::platform::current_gid();
+    let uid = crate::utils::platform::current_uid();
+    let gid = crate::utils::platform::current_gid();
     let mut preamble = format!(
         "RUN useradd -o -m -d {} -u {uid} -g {gid} -s /bin/sh {} || true\n",
         shell_quote(AGENT_HOME),
@@ -231,8 +231,8 @@ fn agent_preamble() -> String {
 }
 
 fn agent_epilogue() -> String {
-    let uid = crate::platform::current_uid();
-    let gid = crate::platform::current_gid();
+    let uid = crate::utils::platform::current_uid();
+    let gid = crate::utils::platform::current_gid();
     let mut epilogue = String::from(
         // System trees stay kernel-read-only through --read-only at runtime;
         // stripping directory write bits also blocks create/unlink for any
@@ -426,8 +426,8 @@ mod tests {
     #[test]
     fn build_steps_write_to_the_runtime_home() {
         let file = Config::with_cargo().rendered();
-        let uid = crate::platform::current_uid();
-        let gid = crate::platform::current_gid();
+        let uid = crate::utils::platform::current_uid();
+        let gid = crate::utils::platform::current_gid();
         assert!(
             file.contains(&format!(
                 "RUN useradd -o -m -d '/home/agent' -u {uid} -g {gid} -s /bin/sh 'agent' || true\n"
@@ -454,8 +454,8 @@ mod tests {
         let hardening = file
             .find("RUN find /usr /bin /sbin /lib /etc -type d -exec chmod 555")
             .unwrap();
-        let uid = crate::platform::current_uid();
-        let gid = crate::platform::current_gid();
+        let uid = crate::utils::platform::current_uid();
+        let gid = crate::utils::platform::current_gid();
         let chown = file
             .find(&format!("RUN chown -R {uid}:{gid} '/home/agent'\n"))
             .unwrap();

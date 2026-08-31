@@ -1,7 +1,7 @@
 use eyre::{Result, WrapErr, bail};
 use std::process::Command;
 
-use crate::environment;
+use crate::utils::environment;
 use crate::registry::{self, SessionRecord};
 
 pub(crate) fn resolve_session(session_id: Option<&str>) -> Result<SessionRecord> {

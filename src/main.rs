@@ -3,16 +3,12 @@ use eyre::{Result, bail};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-mod agent;
-mod audio;
 mod config;
-mod environment;
+mod utils;
 mod handlers;
 mod harness;
 mod image;
 mod networking;
-mod platform;
-mod progress;
 mod registry;
 mod sandbox;
 mod session;
@@ -87,7 +83,7 @@ fn main() -> ExitCode {
 
 fn execute() -> Result<()> {
     let cli = Cli::parse();
-    progress::init_tracing_with_progress(cli.verbose);
+    utils::progress::init_tracing_with_progress(cli.verbose);
     spawn_signal_cleanup();
     if cli.yes && cli.no {
         bail!("--yes and --no cannot be combined")

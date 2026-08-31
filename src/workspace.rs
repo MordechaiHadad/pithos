@@ -128,8 +128,8 @@ pub(crate) fn populate_sandbox(
     let started = std::time::Instant::now();
     let used = match requested {
         CopyStrategy::Worktree => {
-            let result = if crate::progress::is_progress_enabled() {
-                crate::progress::with_worktree_progress(|| {
+            let result = if crate::utils::progress::is_progress_enabled() {
+                crate::utils::progress::with_worktree_progress(|| {
                     populate_worktree(source, sandbox, ignore).map(|()| CopyStrategy::Worktree)
                 })
             } else {
@@ -141,8 +141,8 @@ pub(crate) fn populate_sandbox(
                     tracing::warn!(%error, "worktree population failed; falling back to full copy");
                     clear_directory(sandbox)?;
                     let method = CopyMethod::Copy;
-                    let stats = if crate::progress::is_progress_enabled() {
-                        crate::progress::with_copy_progress("plain copy", |progress| {
+                    let stats = if crate::utils::progress::is_progress_enabled() {
+                        crate::utils::progress::with_copy_progress("plain copy", |progress| {
                             copy_tree(source, sandbox, ignore, method, Some(progress))
                         })?
                     } else {
@@ -164,8 +164,8 @@ pub(crate) fn populate_sandbox(
         }
         CopyStrategy::Reflink => {
             let method = CopyMethod::Reflink;
-            let stats = if crate::progress::is_progress_enabled() {
-                crate::progress::with_copy_progress("reflink copy", |progress| {
+            let stats = if crate::utils::progress::is_progress_enabled() {
+                crate::utils::progress::with_copy_progress("reflink copy", |progress| {
                     copy_tree(source, sandbox, ignore, method, Some(progress))
                 })?
             } else {
@@ -184,8 +184,8 @@ pub(crate) fn populate_sandbox(
         }
         CopyStrategy::Copy => {
             let method = CopyMethod::Copy;
-            let stats = if crate::progress::is_progress_enabled() {
-                crate::progress::with_copy_progress("plain copy", |progress| {
+            let stats = if crate::utils::progress::is_progress_enabled() {
+                crate::utils::progress::with_copy_progress("plain copy", |progress| {
                     copy_tree(source, sandbox, ignore, method, Some(progress))
                 })?
             } else {
@@ -664,7 +664,7 @@ mod tests {
         fixture.init_repo();
         fixture.write("target.txt", "pointed at");
         fixture.commit("init");
-        crate::platform::symlink(Path::new("target.txt"), &fixture.source.join("linked.txt"))
+        crate::utils::platform::symlink(Path::new("target.txt"), &fixture.source.join("linked.txt"))
             .unwrap();
 
         fixture.assert_matches_source(&[]);

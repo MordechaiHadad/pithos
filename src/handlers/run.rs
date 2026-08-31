@@ -17,7 +17,7 @@ pub(crate) fn run(
     auto_no: bool,
 ) -> Result<()> {
     let repository = env::current_dir().wrap_err("cannot determine current directory")?;
-    if crate::platform::current_uid() == 0 {
+    if crate::utils::platform::current_uid() == 0 {
         eyre::bail!(
             "pithos sessions require a non-root host user; running as root would leave \
              system paths writable inside the sandbox"
@@ -115,15 +115,15 @@ fn run_session(
     let runtime_dir = format!("/run/user/{uid}");
     command.args([
         "--tmpfs",
-        &crate::harness::tmpfs_spec(crate::agent::AGENT_HOME),
+        &crate::harness::tmpfs_spec(crate::utils::agent::AGENT_HOME),
     ]);
     command.args(["--tmpfs", &crate::harness::tmpfs_spec(&runtime_dir)]);
     for (key, value) in &config.environment {
         command.args(["--env", &format!("{key}={value}")]);
     }
-    command.args(["--env", &format!("HOME={}", crate::agent::AGENT_HOME)]);
-    command.args(["--env", &format!("{}={uid}", crate::agent::AGENT_UID_ENV)]);
-    command.args(["--env", &format!("{}={gid}", crate::agent::AGENT_GID_ENV)]);
+    command.args(["--env", &format!("HOME={}", crate::utils::agent::AGENT_HOME)]);
+    command.args(["--env", &format!("{}={uid}", crate::utils::agent::AGENT_UID_ENV)]);
+    command.args(["--env", &format!("{}={gid}", crate::utils::agent::AGENT_GID_ENV)]);
     if !config.environment.contains_key("XDG_RUNTIME_DIR") {
         command.args(["--env", &format!("XDG_RUNTIME_DIR={runtime_dir}")]);
     }
@@ -138,7 +138,7 @@ fn run_session(
     for (key, value) in config.harness.environment() {
         command.args(["--env", &format!("{key}={value}")]);
     }
-    for (key, value) in crate::environment::terminal_env() {
+    for (key, value) in crate::utils::environment::terminal_env() {
         if !config.environment.contains_key(&key) {
             command.args(["--env", &format!("{key}={value}")]);
         }
@@ -149,7 +149,7 @@ fn run_session(
         &whitelist_addresses.0,
         &whitelist_addresses.1,
     );
-    if let Some(audio) = crate::audio::passthrough(config.audio) {
+    if let Some(audio) = crate::utils::audio::passthrough(config.audio) {
         tracing::debug!(volume = %audio.volume, "passing host audio through");
         command.args(["--volume", &audio.volume]);
         for (key, value) in audio.env {
@@ -201,13 +201,13 @@ fn run_session(
     tracing::debug!(apply, "review decision");
     if apply {
         let method = strategy.copy_method();
-        let progress = if crate::progress::is_progress_enabled() {
+        let progress = if crate::utils::progress::is_progress_enabled() {
             Some(())
         } else {
             None
         };
         if progress.is_some() {
-            crate::progress::with_apply_progress(|p| {
+            crate::utils::progress::with_apply_progress(|p| {
                 crate::sandbox::apply_tree(
                     sandbox.path(),
                     repository,
@@ -304,8 +304,8 @@ fn prepare_workspace(
     let strategy = populate_sandbox(repository, sandbox.path(), &config.ignore, forced_strategy)?;
     // strip_remotes is best-effort: non-git sandboxes are fine
     let _ = strip_remotes(sandbox.path());
-    let uid = crate::platform::current_uid();
-    let gid = crate::platform::current_gid();
+    let uid = crate::utils::platform::current_uid();
+    let gid = crate::utils::platform::current_gid();
     let current_user = format!("{uid}:{gid}");
     let unmanaged_paths = session::unmanaged(config);
     let record = registry::SessionRecord::new(registry::SessionRecordInput {
@@ -384,10 +384,10 @@ fn update_snapshot(
 /// and both only read during normal operation.
 fn live_tier_env() -> [(&'static str, String); 2] {
     [
-        ("CARGO_HOME", format!("{}/.cargo", crate::agent::AGENT_HOME)),
+        ("CARGO_HOME", format!("{}/.cargo", crate::utils::agent::AGENT_HOME)),
         (
             "NPM_CONFIG_PREFIX",
-            format!("{}/.local", crate::agent::AGENT_HOME),
+            format!("{}/.local", crate::utils::agent::AGENT_HOME),
         ),
     ]
 }
@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn live_tier_env_redirects_writable_state_only() {
-        let home = crate::agent::AGENT_HOME;
+        let home = crate::utils::agent::AGENT_HOME;
         let env: std::collections::BTreeMap<_, _> = live_tier_env().into_iter().collect();
         assert_eq!(env.get("CARGO_HOME").unwrap(), &format!("{home}/.cargo"));
         assert_eq!(

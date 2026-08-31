@@ -164,7 +164,7 @@ fn current_branch(sandbox: &Path) -> Result<String> {
 
 fn run_viewer(viewer: &str, repo: &Path) -> Result<()> {
     let command = viewer.replace("{dir}", &repo.display().to_string());
-    let status = crate::platform::run_shell(&command).wrap_err("could not run diff_viewer")?;
+    let status = crate::utils::platform::run_shell(&command).wrap_err("could not run diff_viewer")?;
     if !status.success() {
         eprintln!("diff_viewer exited with {status}");
     }
@@ -313,8 +313,8 @@ fn file_diff(source: &Path, sandbox: &Path, relative: &Path) -> Result<Option<St
         fs::symlink_metadata(&sandbox_path).is_ok(),
     ) {
         (true, true) => (source_path, sandbox_path),
-        (true, false) => (source_path, crate::platform::null_device()),
-        _ => (crate::platform::null_device(), sandbox_path),
+        (true, false) => (source_path, crate::utils::platform::null_device()),
+        _ => (crate::utils::platform::null_device(), sandbox_path),
     };
     git_diff(&left, &right).map(|diff| diff.map(|diff| clean_headers(&diff, relative)))
 }

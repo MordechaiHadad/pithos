@@ -4,8 +4,8 @@ use std::process::Command;
 
 use eyre::{WrapErr, eyre};
 
-use crate::agent::AGENT_HOME;
-use crate::platform;
+use crate::utils::agent::AGENT_HOME;
+use crate::utils::platform;
 
 use super::Allowlist;
 use super::def::{HarnessDef, MountDef};

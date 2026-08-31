@@ -139,8 +139,8 @@ impl Networking {
         } else {
             tracing::debug!("network cache miss");
         }
-        if crate::progress::is_progress_enabled() && !hosts.is_empty() {
-            crate::progress::with_resolve_progress(hosts.len(), |progress| {
+        if crate::utils::progress::is_progress_enabled() && !hosts.is_empty() {
+            crate::utils::progress::with_resolve_progress(hosts.len(), |progress| {
                 refresh_cache(&hosts, progress)
             })
         } else {
@@ -152,7 +152,7 @@ impl Networking {
 
 fn refresh_cache(
     hosts: &[String],
-    progress: &mut Option<crate::progress::CountProgress>,
+    progress: &mut Option<crate::utils::progress::CountProgress>,
 ) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
     let (v4, v6) = resolve_hosts(hosts, progress);
     if !v4.is_empty() || !v6.is_empty() {
@@ -244,7 +244,7 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 )]
 pub(crate) fn resolve_hosts(
     hosts: &[String],
-    progress: &mut Option<crate::progress::CountProgress>,
+    progress: &mut Option<crate::utils::progress::CountProgress>,
 ) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
     let deadline = Instant::now() + RESOLVE_TIMEOUT;
     let (tx, rx) = mpsc::channel::<(String, io::Result<Vec<SocketAddr>>)>();

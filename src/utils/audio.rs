@@ -37,7 +37,7 @@ fn passthrough_in(runtime_dir: Option<&Path>) -> Option<Passthrough> {
             return None;
         }
     };
-    let uid = crate::platform::current_uid();
+    let uid = crate::utils::platform::current_uid();
     let guest_dir = format!("/run/user/{uid}");
     let guest_socket = format!("{guest_dir}/pulse/native");
     Some(Passthrough {
@@ -69,7 +69,7 @@ mod tests {
 
         let passthrough =
             passthrough_in(Some(dir.path())).expect("passthrough for an existing socket");
-        let uid = crate::platform::current_uid();
+        let uid = crate::utils::platform::current_uid();
         assert_eq!(
             passthrough.volume,
             format!("{}:/run/user/{uid}/pulse/native:rw,Z", socket.display())
