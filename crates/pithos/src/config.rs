@@ -8,11 +8,10 @@ use pithos_harness::Harness;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct Config {
-    #[serde(default = "default_base_image")]
-    pub(crate) base_image: String,
     #[serde(default = "default_workspace")]
     pub(crate) workspace: String,
-    #[serde(default)]
+    /// Set only through `--toolchain`; never read from pithos.toml.
+    #[serde(skip, default)]
     pub(crate) image_tag: Option<String>,
     #[serde(default = "default_install")]
     pub(crate) install: Vec<String>,
@@ -172,9 +171,37 @@ fn default_install() -> Vec<String> {
     ]
 }
 
-fn default_base_image() -> String {
-    "node:22-bookworm-slim".into()
+/// The one vetted base image every pithos image builds from. It is
+/// deliberately not configurable: language runtimes (node, rust, python, ...)
+/// are provisioned through mise and harness `depends_on` instead.
+pub(crate) const VETTED_BASE_IMAGE: &str = "debian:bookworm-slim";
+
+#[derive(Debug, Deserialize)]
+struct LegacyImageSettings {
+    #[serde(default)]
+    base_image: Option<String>,
+    #[serde(default)]
+    image_tag: Option<String>,
 }
+
+fn reject_removed_image_settings(text: &str) -> Result<()> {
+    let legacy: LegacyImageSettings =
+        toml::from_str(text).wrap_err("invalid TOML configuration")?;
+    if legacy.base_image.is_some() {
+        bail!(
+            "`base_image` is no longer configurable; pithos always builds from the \
+             vetted image {VETTED_BASE_IMAGE}; remove the key from pithos.toml"
+        )
+    }
+    if legacy.image_tag.is_some() {
+        bail!(
+            "image_tag is no longer configurable; images are tagged \
+             localhost/pithos-<harness>[-<toolchain>]:latest automatically"
+        )
+    }
+    Ok(())
+}
+
 fn default_workspace() -> String {
     "/workspace".into()
 }
@@ -196,18 +223,18 @@ impl Config {
 
     pub(crate) fn load(explicit: Option<&Path>, toolchain: Option<String>) -> Result<Self> {
         let path = resolve_config(explicit)?;
-        let mut config: Config =
-            toml::from_str(&fs::read_to_string(&path).wrap_err("cannot read config")?)
-                .wrap_err("invalid TOML configuration")?;
+        let text = fs::read_to_string(&path).wrap_err("cannot read config")?;
+        reject_removed_image_settings(&text)?;
+        let mut config: Config = toml::from_str(&text).wrap_err("invalid TOML configuration")?;
         config.global_toolchains = load_global_toolchains()?;
         config.with_toolchain(toolchain);
         config.validate()?;
         Ok(config)
     }
 
-    /// Resolves the image tag: an explicit `image_tag` from the config wins,
-    /// otherwise the tag is derived from the harness name so each harness
-    /// builds into its own image namespace.
+    /// Resolves the image tag: always derived from the harness name, with an
+    /// optional toolchain slot, so each harness+toolchain pair builds into
+    /// its own image namespace without ever being configurable.
     pub(crate) fn image_tag(&self) -> String {
         match &self.image_tag {
             Some(tag) => tag.clone(),
@@ -218,7 +245,10 @@ impl Config {
     pub(crate) fn with_toolchain(&mut self, toolchain: Option<String>) {
         if let Some(name) = toolchain {
             self.toolchains = vec![name.clone()];
-            self.image_tag = Some(format!("{}-{}", self.image_tag(), name));
+            self.image_tag = Some(format!(
+                "localhost/pithos-{}-{name}:latest",
+                self.harness.name()
+            ));
         }
     }
 
@@ -291,9 +321,6 @@ impl Config {
         if self.workspace.is_empty() || !self.workspace.starts_with('/') {
             bail!("workspace must be an absolute container path")
         }
-        if self.image_tag.as_deref() == Some("") {
-            bail!("image_tag cannot be empty")
-        }
         let defs = self.merged_toolchains();
         for name in defs.keys() {
             if !valid_toolchain_name(name) {
@@ -334,8 +361,10 @@ impl Config {
 }
 
 fn starter_config() -> String {
-    r#"base_image = "node:22-bookworm-slim"
-workspace = "/workspace"
+    r#"workspace = "/workspace"
+
+# The container always builds from a fixed vetted base image
+# (debian:bookworm-slim); there is no base_image/image_tag setting.
 
 # Install tools from the mise registry (supports name@version and backend:name):
 # mise = ["neovim", "lua-language-server"]
@@ -423,20 +452,6 @@ mod tests {
 
     #[test]
     fn toolchains_parse_known_names() {
-        let config = Config::parse(
-            r#"
-            toolchains = ["rust", "python"]
-
-            [harness]
-            name = "opencode"
-            command = ["opencode", "/workspace"]
-            "#,
-        );
-        assert_eq!(config.toolchains, ["rust", "python"]);
-    }
-
-    #[test]
-    fn custom_toolchain_definitions_parse() {
         let config = Config::parse(
             r#"
             toolchains = ["golang"]
@@ -737,7 +752,7 @@ mod tests {
         assert_eq!(config.toolchains, ["golang"]);
         assert_eq!(
             config.image_tag(),
-            "localhost/pithos-opencode:latest-golang"
+            "localhost/pithos-opencode-golang:latest"
         );
     }
 
@@ -771,8 +786,29 @@ mod tests {
     }
 
     #[test]
-    fn explicit_image_tag_overrides_harness_derivation() {
-        let config = Config::parse(
+    fn removed_base_image_key_fails_with_guidance() {
+        let error = reject_removed_image_settings(
+            r#"
+            base_image = "alpine:3.20"
+
+            [harness]
+            name = "opencode"
+            command = ["opencode", "/workspace"]
+            "#,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("`base_image` is no longer configurable"),
+            "{}",
+            error
+        );
+    }
+
+    #[test]
+    fn removed_image_tag_key_fails_with_derivation_hint() {
+        let error = reject_removed_image_settings(
             r#"
             image_tag = "localhost/custom:v1"
 
@@ -780,8 +816,15 @@ mod tests {
             name = "claude-code"
             command = ["claude"]
             "#,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("image_tag is no longer configurable"),
+            "{}",
+            error
         );
-        assert_eq!(config.image_tag(), "localhost/custom:v1");
     }
 
     #[test]
@@ -790,23 +833,8 @@ mod tests {
         config.with_toolchain(Some("python".into()));
         assert_eq!(
             config.image_tag(),
-            "localhost/pithos-claude-code:latest-python"
+            "localhost/pithos-claude-code-python:latest"
         );
-    }
-
-    #[test]
-    fn empty_explicit_image_tag_fails_validation() {
-        let config = Config::try_parse(
-            r#"
-            image_tag = ""
-
-            [harness]
-            name = "opencode"
-            command = ["opencode", "/workspace"]
-            "#,
-        )
-        .unwrap();
-        assert!(config.validate().is_err());
     }
 
     #[test]

@@ -1,6 +1,26 @@
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HarnessDependency {
+    Npm,
+    Cargo,
+    Bun,
+    Uv,
+}
+
+impl HarnessDependency {
+    pub fn mise_tools(self) -> &'static [&'static str] {
+        match self {
+            Self::Npm => &["node"],
+            Self::Cargo => &["rust"],
+            Self::Bun => &["bun"],
+            Self::Uv => &["python", "uv"],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MountType {
     Credentials,

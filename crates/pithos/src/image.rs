@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::process::Command;
 
-use crate::config::{Config, Download, ToolchainDef, UvTool};
+use crate::config::{Config, Download, ToolchainDef, UvTool, VETTED_BASE_IMAGE};
 use crate::sandbox::TempDir;
 use crate::utils::agent::{AGENT_HOME, AGENT_USER};
 
@@ -70,12 +70,14 @@ impl Config {
         self.containerfile()?.hash(&mut hasher);
         Ok(format!("{:016x}", hasher.finish()))
     }
+}
 
+impl Config {
     fn containerfile(&self) -> Result<String> {
-        let mut output = format!("FROM {}\nWORKDIR {}\n", self.base_image, self.workspace);
+        let mut output = format!("FROM {VETTED_BASE_IMAGE}\nWORKDIR {}\n", self.workspace);
         output.push_str("USER root\n");
         output.push_str(&agent_preamble());
-        output.push_str(&self.harness.install());
+        output.push_str(&agent_preamble());
         let mut packages = self.install.clone();
         if !packages.iter().any(|package| package == "nftables") {
             // Appended last so the default install list keeps its declared
@@ -113,10 +115,23 @@ impl Config {
         }
         let mut covered: BTreeSet<&String> = self.mise.iter().collect();
         covered.extend(wanted.iter().flat_map(|name| defs[name].mise.iter()));
-        providers.retain(|provider| !covered.contains(provider));
+        // Harness install steps declare their own runtime needs; both feed
+        // the same mise bootstrap so the tool exists before the RUN line.
+        let harness_depends = self.harness.depends_on();
+        let harness_mise_tools: Vec<String> = harness_depends
+            .iter()
+            .flat_map(|dependency| dependency.mise_tools())
+            .map(|tool| (*tool).to_owned())
+            .collect();
+        providers.retain(|provider| {
+            !covered.contains(provider) && !harness_mise_tools.contains(provider)
+        });
         let mut mise_tools = self.mise.clone();
+        mise_tools.extend(harness_mise_tools);
         mise_tools.extend(providers);
-        if !mise_tools.is_empty() || wanted.iter().any(|name| !defs[name].mise.is_empty()) {
+        let mise_bootstrapped =
+            !mise_tools.is_empty() || wanted.iter().any(|name| !defs[name].mise.is_empty());
+        if mise_bootstrapped {
             // cargo/bin precedes the shims so rust tools exec their real
             // proxies directly, immune to mise config reconciliation.
             output.push_str(
@@ -147,6 +162,15 @@ impl Config {
         }
         for download in &self.downloads {
             output.push_str(&format!("RUN {}\n", download.command()));
+        }
+        let install = self.harness.install();
+        if !install.is_empty() {
+            output.push_str(&format!("RUN {install}\n"));
+        }
+        if mise_bootstrapped {
+            // npm/cargo-installed binaries land inside tool-managed bin dirs;
+            // reshim regenerates the shims so they resolve in sessions.
+            output.push_str("RUN mise reshim\n");
         }
         output.push_str(&format!(
             "LABEL pithos.init={}\n",
@@ -414,9 +438,10 @@ mod tests {
         let file = Config::with_cargo().rendered();
         assert!(file.contains("RUN cargo install 'just'\n"));
         let mise = file.find("(command -v mise").unwrap();
-        let rust = file.find("mise use -g --yes 'rust'\n").unwrap();
+        let node = file.find("mise use -g --yes 'node' ").unwrap();
+        let rust = file.find("'rust'\n").unwrap();
         let install = file.find("RUN cargo install 'just'\n").unwrap();
-        assert!(mise < rust && rust < install);
+        assert!(mise < node && node < rust && rust < install);
         assert!(file.contains(
             "ENV MISE_DATA_DIR=/usr/local/share/mise RUSTUP_HOME=/usr/local/share/mise/rustup CARGO_HOME=/usr/local/share/mise/cargo PATH=/usr/local/share/mise/cargo/bin:/usr/local/share/mise/shims:$PATH\n"
         ));
@@ -478,7 +503,7 @@ mod tests {
         )
         .unwrap();
         let file = config.rendered();
-        assert!(file.contains("mise use -g --yes 'deno' 'rust' 'bun' 'python' 'uv'\n"));
+        assert!(file.contains("mise use -g --yes 'deno' 'node' 'rust' 'bun' 'python' 'uv'\n"));
         assert!(file.contains("ENV UV_TOOL_BIN_DIR=/usr/local/bin\n"));
         let mise = file.find("mise use -g --yes 'deno'").unwrap();
         let uv_env = file.find("ENV UV_TOOL_BIN_DIR=/usr/local/bin\n").unwrap();
@@ -529,14 +554,25 @@ mod tests {
         assert!(file.contains(
             "ENV MISE_DATA_DIR=/usr/local/share/mise RUSTUP_HOME=/usr/local/share/mise/rustup CARGO_HOME=/usr/local/share/mise/cargo PATH=/usr/local/share/mise/cargo/bin:/usr/local/share/mise/shims:$PATH"
         ));
-        assert!(file.contains("(command -v mise >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/* && curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh)) && mise use -g --yes 'neovim' 'lua-language-server'\n"));
+        assert!(file.contains("(command -v mise >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/* && curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh)) && mise use -g --yes 'neovim' 'lua-language-server' 'node'\n"));
     }
 
     #[test]
-    fn mise_block_absent_when_no_tools() {
+    fn harness_depends_on_bootstraps_provider_before_harness_install() {
         let config: Config = toml::from_str("[harness]\nname = \"opencode\"").unwrap();
         let file = config.rendered();
-        assert!(!file.contains("mise"));
+        assert!(file.contains("mise use -g --yes 'node'\n"));
+        let mise = file.find("mise use -g --yes 'node'").unwrap();
+        let install = file.find("RUN npm install --global opencode-ai\n").unwrap();
+        assert!(
+            mise < install,
+            "node must be provisioned before harness install"
+        );
+        let from_line = file.find("FROM debian:bookworm-slim\n").unwrap();
+        assert_eq!(
+            0, from_line,
+            "containerfile must start from the vetted base"
+        );
     }
 
     #[test]
@@ -583,7 +619,14 @@ mod tests {
         assert!(file.contains(
             "ENV MISE_DATA_DIR=/usr/local/share/mise PATH=/usr/local/share/mise/shims:$PATH"
         ));
-        assert!(!file.contains("mise use -g"));
+        // The hand-rolled toolchain never pulls mise-registry tools; the only
+        // automatic mise use is the harness's declared node dependency.
+        let mise_uses = file.matches("mise use -g").count();
+        assert_eq!(
+            mise_uses, 1,
+            "only the harness dependency may bootstrap tools"
+        );
+        assert!(file.contains("mise use -g --yes 'node'\n"));
     }
 
     #[test]
@@ -675,7 +718,7 @@ mod tests {
         config.with_toolchain(Some("lua".into()));
         let file = config.rendered();
         assert!(file.contains("mise use -g --yes 'lua'\n"));
-        assert_eq!(config.image_tag(), "localhost/pithos-opencode:latest-lua");
+        assert_eq!(config.image_tag(), "localhost/pithos-opencode-lua:latest");
     }
 
     #[test]

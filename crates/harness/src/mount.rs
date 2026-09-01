@@ -37,7 +37,8 @@ pub fn resolve_host_path(
             Ok(base.join(app).join(&def.host))
         }
         HostBase::Cache(app) => {
-            let base = dirs::cache_dir().ok_or_else(|| eyre!("cannot determine cache directory"))?;
+            let base =
+                dirs::cache_dir().ok_or_else(|| eyre!("cannot determine cache directory"))?;
             Ok(base.join(app).join(&def.host))
         }
         HostBase::Runtime => Ok(runtime_base.join(session_id).join(&def.host)),
@@ -242,7 +243,8 @@ fn resolve_credential_file_path(
             Ok(base.join(app).join(trimmed))
         }
         HostBase::Cache(app) => {
-            let base = dirs::cache_dir().ok_or_else(|| eyre!("cannot determine cache directory"))?;
+            let base =
+                dirs::cache_dir().ok_or_else(|| eyre!("cannot determine cache directory"))?;
             Ok(base.join(app).join(trimmed))
         }
         HostBase::Runtime => Ok(runtime_base.join(session_id).join(trimmed)),
@@ -270,8 +272,7 @@ fn keychain_export(service: &str) -> eyre::Result<Vec<u8>> {
 
 fn sanitize_target(target: &str) -> String {
     target
-        .replace('/', "_")
-        .replace('\\', "_")
+        .replace(['/', '\\'], "_")
         .trim_start_matches('_')
         .to_string()
 }

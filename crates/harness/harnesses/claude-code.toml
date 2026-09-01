@@ -1,6 +1,7 @@
 schema_version = 1
 name = "claude-code"
-install = "RUN npm install --global @anthropic-ai/claude-code\n"
+install = "npm install --global @anthropic-ai/claude-code"
+depends_on = ["npm"]
 
 # Credentials: gated on credentials = true
 [[credential]]

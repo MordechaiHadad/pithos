@@ -11,7 +11,7 @@ pub mod types;
 pub use def::{CredentialDef, HarnessDef};
 pub use harness::{Allowlist, Harness};
 pub use mount::tmpfs_spec;
-pub use types::{Access, HostBase, MountType, OnMissing, Platform, Translation};
+pub use types::{Access, HarnessDependency, HostBase, MountType, OnMissing, Platform, Translation};
 
 use std::path::Path;
 use std::process::Command;

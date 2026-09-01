@@ -4,7 +4,10 @@ Pithos runs disposable agent workspaces in Podman containers. It copies the
 current Git repository into a temporary workspace, runs the configured harness,
 and can apply the changes back to the repository after the session finishes.
 
-The container image is built from `pithos.toml`. The default harness is
+The container always builds from a fixed, vetted base image
+(`debian:bookworm-slim`); there is no image setting to configure. Language
+runtimes are provisioned through mise as needed, and each harness definition
+carries the shell command that installs it. The default harness is
 OpenCode, but the configuration format keeps the harness settings separate
 from the container settings.
 
@@ -82,9 +85,10 @@ pithos build --toolchain python
 
 `--toolchain` (or `-t`) accepts any toolchain name that resolves to a
 definition (global library or project configuration) and overrides
-the `toolchains` key in the configuration. It uses an image tag suffixed with
+the `toolchains` key in the configuration. It uses an image tag that includes
 the toolchain name, so `pithos run --toolchain rust` reuses an existing
-`...:latest-rust` image when it already matches the configuration.
+`localhost/pithos-<harness>-rust:latest` image when it already matches the
+configuration.
 
 An alternate configuration can be selected with the global `--config` option:
 
@@ -152,7 +156,6 @@ for terminal integration.
 The configuration file is TOML. A minimal configuration is:
 
 ```toml
-base_image = "node:22-bookworm-slim"
 workspace = "/workspace"
 
 [harness]
@@ -162,18 +165,19 @@ command = ["opencode", "/workspace"]
 
 ### Container settings
 
-`base_image` is the base container image. It defaults to
-`node:22-bookworm-slim`. Any image works as long as it provides `node`, `npm`,
-and `useradd`; pithos provisions its own unprivileged agent user (uid/gid taken
-from the invoking host user, home `/home/agent`) instead of relying on the base
-image's default user. After building, `host/smoke-test-agent.sh <image>`
-verifies the session environment: agent-home ownership, writable state/cache
-mounts, and that every installed tool resolves for the runtime user.
+The base image is a fixed, vetted image (`debian:bookworm-slim`) and cannot be
+changed. Pithos provisions its own unprivileged agent user (uid/gid taken from
+the invoking host user, home `/home/agent`) instead of relying on the base
+image's default user; language runtimes are installed through mise whenever a
+toolchain or harness needs them. After building, `host/smoke-test.sh <image>`
+verifies the session environment: egress enforcement and that the container
+boots under the agent identity.
 
-`image_tag` is the local Podman image tag. It defaults to
-`localhost/pithos-<harness-name>:latest` (for example
-`localhost/pithos-claude-code:latest` for the claude-code harness), so each
-harness builds into its own image namespace. Set it explicitly to override.
+Images are tagged `localhost/pithos-<harness>:latest`, or
+`localhost/pithos-<harness>-<toolchain>:latest` when a toolchain is selected
+with `--toolchain`, so each harness+toolchain pair builds into its own image
+namespace. The tag is derived automatically and cannot be set from the
+configuration.
 
 `workspace` is the absolute path used as the working directory inside the
 container. It defaults to `/workspace`.
@@ -320,13 +324,16 @@ name = "claude-code"
 credentials = true
 ```
 
-`command` is the command run when the container starts. It defaults to
-`["opencode", "/workspace"]` for OpenCode and `["claude"]` for Claude Code.
-Claude Code treats positional arguments as prompts, so the default command is
+`command` is the required command run when the container starts, for example
+`["opencode", "/workspace"]` for OpenCode or `["claude"]` for Claude Code.
+Claude Code treats positional arguments as prompts, so its command is
 deliberately bare; the container already starts in the workspace directory.
 
 Harness definitions are stored in `crates/harness/harnesses/*.toml` and embedded into the
-`pithos-harness` crate during the Cargo build. The definition contains the install command,
+`pithos-harness` crate during the Cargo build. The definition contains the install command
+(a plain shell command, run during the image build), the mise tools it
+`depends_on` (for example `["npm"]`, which provisions `node` so `npm` resolves
+during the install), the
 default command, and repeated `[[mount]]` entries. Each mount has a closed
 `type` (`credentials`, `state`, `config`, `ephemeral`, or `generated`) and an
 independent `access` (`ro`, `pinned`, `pinned_dir`, or `tmpfs`), plus a
@@ -341,7 +348,8 @@ a warning. A minimal custom harness is:
 ```toml
 schema_version = 1
 name = "my-agent"
-install = "RUN npm install --global my-agent\n"
+install = "npm install --global my-agent"
+depends_on = ["node"]
 command = ["my-agent"]
 
 [[mount]]
@@ -430,7 +438,12 @@ edit = "allow"
 
 ### Repository and environment settings
 
-`exclusions` is a list of paths excluded when comparing or applying changes.
+### Repository and environment settings
+
+`ignore` is a list of paths excluded when populating the session workspace and
+when comparing or applying changes. `ephemeral` is a list of churn paths
+(build output, caches) that are likewise excluded from the end-of-session
+review.
 
 `diff_viewer` is an optional command used to review changes. It must contain a
 `{dir}` placeholder, which is replaced with the temporary workspace path.
@@ -518,8 +531,8 @@ access to host audio output and potentially microphone input.
 Run formatting and tests with:
 
 ```sh
-just fmt-check
-just test
+cargo fmt --check
+cargo test --workspace
 ```
 
 Common tasks live in a [justfile](https://github.com/casey/just); `just` alone

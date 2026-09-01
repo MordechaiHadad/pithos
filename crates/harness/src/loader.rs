@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use eyre::WrapErr;
 
-use crate::def::{HarnessDef, HarnessToml};
+use crate::def::HarnessDef;
 
 pub fn user_harness_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("pithos").join("harnesses"))
@@ -40,13 +40,5 @@ pub fn load_from_dir(dir: &Path) -> Vec<HarnessDef> {
 fn load_one(path: &Path) -> eyre::Result<HarnessDef> {
     let text =
         fs::read_to_string(path).wrap_err_with(|| format!("cannot read {}", path.display()))?;
-    let parsed: HarnessToml =
-        toml::from_str(&text).wrap_err_with(|| format!("invalid TOML {}", path.display()))?;
-    if parsed.schema_version != 1 {
-        eyre::bail!("unsupported schema_version {}", parsed.schema_version);
-    }
-    if parsed.name.is_empty() {
-        eyre::bail!("harness name cannot be empty");
-    }
-    Ok(parsed.into())
+    HarnessDef::from_toml_str(&text).wrap_err_with(|| format!("invalid {}", path.display()))
 }

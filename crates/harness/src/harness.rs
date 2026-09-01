@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use crate::def::HarnessDef;
 use crate::registry;
 use crate::types;
+use crate::types::HarnessDependency;
 
 pub type Allowlist = BTreeMap<String, Value>;
 
@@ -28,6 +29,12 @@ impl Harness {
     pub fn install(&self) -> String {
         self.definition()
             .map(|definition| definition.install)
+            .unwrap_or_default()
+    }
+
+    pub fn depends_on(&self) -> Vec<HarnessDependency> {
+        self.definition()
+            .map(|definition| definition.depends_on)
             .unwrap_or_default()
     }
 

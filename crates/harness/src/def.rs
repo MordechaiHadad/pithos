@@ -1,6 +1,8 @@
 use serde::Deserialize;
 
-use super::types::{Access, HostBase, MountType, OnMissing, Platform, Translation};
+use super::types::{
+    Access, HarnessDependency, HostBase, MountType, OnMissing, Platform, Translation,
+};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -10,6 +12,8 @@ pub struct HarnessToml {
     pub name: String,
     #[serde(default)]
     pub install: String,
+    #[serde(default)]
+    pub depends_on: Vec<HarnessDependency>,
     #[serde(default)]
     #[serde(rename = "mount")]
     pub mounts: Vec<MountToml>,
@@ -57,6 +61,7 @@ pub struct AllowlistToml {
 pub struct HarnessDef {
     pub name: String,
     pub install: String,
+    pub depends_on: Vec<HarnessDependency>,
     pub mounts: Vec<MountDef>,
     pub credentials: Vec<CredentialDef>,
     pub allowlist: AllowlistDef,
@@ -90,7 +95,8 @@ impl From<HarnessToml> for HarnessDef {
     fn from(value: HarnessToml) -> Self {
         Self {
             name: value.name,
-            install: value.install,
+            install: value.install.trim().to_string(),
+            depends_on: value.depends_on,
             mounts: value.mounts.into_iter().map(Into::into).collect(),
             credentials: value.credentials.into_iter().map(Into::into).collect(),
             allowlist: value.allowlist.into(),
@@ -139,6 +145,18 @@ impl HarnessDef {
         }
         if parsed.name.is_empty() {
             eyre::bail!("harness name cannot be empty");
+        }
+        let first_word = parsed
+            .install
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        if first_word == "RUN" {
+            eyre::bail!(
+                "harness install must be a plain shell command; \
+                 drop the Containerfile \"RUN\" prefix"
+            );
         }
         Ok(parsed.into())
     }

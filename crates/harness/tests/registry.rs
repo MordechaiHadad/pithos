@@ -18,6 +18,20 @@ fn find_returns_correct_definition() {
     let def = registry::find("opencode").expect("opencode must exist");
     assert_eq!(def.name, "opencode");
     assert!(!def.install.is_empty());
+    assert_eq!(def.depends_on, [pithos_harness::HarnessDependency::Npm]);
+}
+
+#[test]
+fn embedded_installs_are_plain_shell_commands() {
+    for def in registry::all_harnesses() {
+        let first_word = def
+            .install
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        assert_ne!(first_word, "RUN", "harness {} bakes a RUN prefix", def.name);
+    }
 }
 
 #[test]
