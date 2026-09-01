@@ -5,6 +5,10 @@ default:
 run *args:
     cargo run --release -- -v run {{args}}
 
+# Install pithos binary from crates/pithos
+install:
+    cargo install --path crates/pithos
+
 # Profile a pithos invocation into flamegraph.svg (defaults to `run`)
 flamegraph *args='run':
     cargo flamegraph --profile profiling --bin pithos --output flamegraph.svg -- {{args}}

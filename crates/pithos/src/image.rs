@@ -9,7 +9,7 @@ use crate::sandbox::TempDir;
 
 /// Container entrypoint that loads session egress rules into the network
 /// namespace before dropping to the unprivileged agent identity.
-const INIT_SCRIPT: &str = include_str!("../host/pithos-init.sh");
+const INIT_SCRIPT: &str = include_str!("../../../host/pithos-init.sh");
 const INIT_PATH: &str = "/usr/local/bin/pithos-init";
 
 impl Config {

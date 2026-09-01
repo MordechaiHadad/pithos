@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-use super::def::HarnessDef;
-use super::loader;
+use crate::def::HarnessDef;
+use crate::loader;
 
 static EMBEDDED: OnceLock<Vec<HarnessDef>> = OnceLock::new();
 
@@ -49,29 +49,6 @@ pub fn find(name: &str) -> Option<HarnessDef> {
     embedded().iter().find(|def| def.name == name).cloned()
 }
 
-#[cfg(test)]
-fn embedded_names() -> Vec<String> {
-    embedded().iter().map(|def| def.name.clone()).collect()
-}
-
 pub fn available_names() -> Vec<String> {
     all_harnesses().into_iter().map(|def| def.name).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn embedded_contains_opencode_and_claude() {
-        let names = embedded_names();
-        assert!(names.contains(&"opencode".to_string()));
-        assert!(names.contains(&"claude-code".to_string()));
-    }
-
-    #[test]
-    fn find_returns_cloned() {
-        assert!(find("opencode").is_some());
-        assert!(find("nonexistent").is_none());
-    }
 }

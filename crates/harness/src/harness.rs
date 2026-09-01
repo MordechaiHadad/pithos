@@ -1,19 +1,14 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::process::Command;
 
 use eyre::{Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-pub mod def;
-pub mod loader;
-pub mod mount;
-pub mod registry;
-pub mod translate;
-pub mod types;
-
-pub use def::HarnessDef;
-pub use mount::tmpfs_spec;
+use crate::def::HarnessDef;
+use crate::registry;
+use crate::types;
 
 pub type Allowlist = BTreeMap<String, Value>;
 
@@ -21,7 +16,7 @@ pub type Allowlist = BTreeMap<String, Value>;
 #[serde(deny_unknown_fields)]
 pub struct Harness {
     name: String,
-    #[cfg_attr(test, serde(default))]
+    #[serde(default)]
     command: Vec<String>,
     #[serde(default)]
     allowlist: Option<Allowlist>,
@@ -44,20 +39,19 @@ impl Harness {
         &self.name
     }
 
-    pub fn mount(&self, command: &mut Command, session_id: &str) -> Result<()> {
+    pub fn mount(&self, command: &mut Command, session_id: &str, runtime_base: &Path) -> Result<()> {
         let definition = self.require_definition()?;
-        let runtime_base = crate::registry::runtime_dir();
-        mount::apply_mounts(
+        crate::mount::apply_mounts(
             &definition,
             command,
             session_id,
-            &runtime_base,
+            runtime_base,
             self.allowlist.as_ref(),
             self.credentials,
         )
     }
 
-    pub(crate) fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         let definition = self.require_definition()?;
         let Some(allowlist) = &self.allowlist else {
             return Ok(());
@@ -77,6 +71,7 @@ impl Harness {
                 let variable = definition
                     .allowlist
                     .env_var
+                    .clone()
                     .unwrap_or_else(|| "OPENCODE_CONFIG_CONTENT".to_string());
                 vec![(variable, json!({ "permission": allowlist }).to_string())]
             }

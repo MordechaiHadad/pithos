@@ -441,6 +441,7 @@ dependencies = [
  "dirs",
  "eyre",
  "indicatif",
+ "pithos-harness",
  "rayon",
  "reflink-copy",
  "serde",
@@ -451,6 +452,19 @@ dependencies = [
  "tracing",
  "tracing-indicatif",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "pithos-harness"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "eyre",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

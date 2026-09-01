@@ -6,7 +6,6 @@ use std::process::ExitCode;
 mod config;
 mod utils;
 mod handlers;
-mod harness;
 mod image;
 mod networking;
 mod registry;

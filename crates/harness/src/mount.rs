@@ -4,12 +4,11 @@ use std::process::Command;
 
 use eyre::{WrapErr, eyre};
 
-use crate::utils::agent::AGENT_HOME;
-use crate::utils::platform;
-
-use super::Allowlist;
-use super::def::{HarnessDef, MountDef};
-use super::types::{Access, HostBase, MountType};
+use crate::agent::AGENT_HOME;
+use crate::harness::Allowlist;
+use crate::def::{HarnessDef, MountDef};
+use crate::platform;
+use crate::types::{Access, HostBase, MountType};
 
 pub fn tmpfs_spec(target: &str) -> String {
     format!("{target}:rw,mode=1777")
@@ -185,7 +184,7 @@ fn write_claude_settings(
         },
         Err(_) => serde_json::json!({}),
     };
-    let merged = super::translate::claude_settings_translation(allowlist, user_settings);
+    let merged = crate::translate::claude_settings_translation(allowlist, user_settings);
     let directory = runtime_base.join(session_id);
     fs::create_dir_all(&directory)
         .wrap_err_with(|| format!("cannot create {}", directory.display()))?;

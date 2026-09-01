@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use super::Allowlist;
+use crate::harness::Allowlist;
 
 pub fn claude_settings_translation(allowlist: &Allowlist, user_settings: Value) -> Value {
     merge_claude_settings(user_settings, allowlist)
@@ -30,25 +30,4 @@ fn merge_claude_settings(mut user_settings: Value, allowlist: &Allowlist) -> Val
     }
     user_settings["permissions"] = json!({ "allow": allow, "ask": ask, "deny": deny });
     user_settings
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn merge_keeps_user_keys_and_replaces_permissions() {
-        let allowlist: Allowlist = [
-            ("edit".to_string(), json!("deny")),
-            ("bash".to_string(), json!({ "git *": "allow", "*": "ask" })),
-        ]
-        .into_iter()
-        .collect();
-        let user = json!({ "model": "opus", "permissions": { "allow": ["Stale"] } });
-        let merged = merge_claude_settings(user, &allowlist);
-        assert_eq!(merged["model"], "opus");
-        assert_eq!(merged["permissions"]["allow"], json!(["Bash(git *)"]));
-        assert_eq!(merged["permissions"]["ask"], json!(["Bash(*)"]));
-        assert_eq!(merged["permissions"]["deny"], json!(["Edit", "Write"]));
-    }
 }

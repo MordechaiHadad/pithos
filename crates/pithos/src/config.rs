@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::harness::Harness;
+use pithos_harness::Harness;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct Config {

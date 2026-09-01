@@ -111,13 +111,13 @@ fn run_session(
         command.args(["--volume", &volume]);
     }
     command.args(["--workdir", &config.workspace]);
-    command.args(["--tmpfs", &crate::harness::tmpfs_spec("/tmp")]);
+    command.args(["--tmpfs", &pithos_harness::tmpfs_spec("/tmp")]);
     let runtime_dir = format!("/run/user/{uid}");
     command.args([
         "--tmpfs",
-        &crate::harness::tmpfs_spec(crate::utils::agent::AGENT_HOME),
+        &pithos_harness::tmpfs_spec(crate::utils::agent::AGENT_HOME),
     ]);
-    command.args(["--tmpfs", &crate::harness::tmpfs_spec(&runtime_dir)]);
+    command.args(["--tmpfs", &pithos_harness::tmpfs_spec(&runtime_dir)]);
     for (key, value) in &config.environment {
         command.args(["--env", &format!("{key}={value}")]);
     }
@@ -143,7 +143,7 @@ fn run_session(
             command.args(["--env", &format!("{key}={value}")]);
         }
     }
-    config.harness.mount(&mut command, &record.identity.id)?;
+    config.harness.mount(&mut command, &record.identity.id, &crate::registry::runtime_dir())?;
     config.networking.apply_to_resolved(
         &mut command,
         &whitelist_addresses.0,

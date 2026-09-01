@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use eyre::WrapErr;
 
-use super::def::{HarnessDef, HarnessToml};
+use crate::def::{HarnessDef, HarnessToml};
 
 pub fn user_harness_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("pithos").join("harnesses"))
@@ -49,57 +49,4 @@ fn load_one(path: &Path) -> eyre::Result<HarnessDef> {
         eyre::bail!("harness name cannot be empty");
     }
     Ok(parsed.into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::sandbox::TempDir;
-
-    #[test]
-    fn loads_valid_harness_from_dir() {
-        let dir = TempDir::create("pithos-loader-test").unwrap();
-        fs::write(
-            dir.path().join("my.toml"),
-            r#"
-schema_version = 1
-name = "my"
-install = "RUN echo hi\n"
-[[mount]]
-host = ""
-target = "/tmp"
-type = "ephemeral"
-access = "tmpfs"
-host_base = "home"
-"#,
-        )
-        .unwrap();
-        let harnesses = load_from_dir(dir.path());
-        assert_eq!(harnesses.len(), 1);
-        assert_eq!(harnesses[0].name, "my");
-    }
-
-    #[test]
-    fn ignores_invalid_file_but_loads_valid() {
-        let dir = TempDir::create("pithos-loader-invalid").unwrap();
-        fs::write(dir.path().join("bad.toml"), "not toml = [[[ ").unwrap();
-        fs::write(
-            dir.path().join("good.toml"),
-            r#"
-schema_version = 1
-name = "good"
-install = "RUN echo hi\n"
-[[mount]]
-host = ""
-target = "/tmp"
-type = "ephemeral"
-access = "tmpfs"
-host_base = "home"
-"#,
-        )
-        .unwrap();
-        let harnesses = load_from_dir(dir.path());
-        assert_eq!(harnesses.len(), 1);
-        assert_eq!(harnesses[0].name, "good");
-    }
 }

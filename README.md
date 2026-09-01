@@ -325,8 +325,8 @@ credentials = true
 Claude Code treats positional arguments as prompts, so the default command is
 deliberately bare; the container already starts in the workspace directory.
 
-Harness definitions are stored in `harnesses/*.toml` and embedded into the
-binary during the Cargo build. The definition contains the install command,
+Harness definitions are stored in `crates/harness/harnesses/*.toml` and embedded into the
+`pithos-harness` crate during the Cargo build. The definition contains the install command,
 default command, and repeated `[[mount]]` entries. Each mount has a closed
 `type` (`credentials`, `state`, `config`, `ephemeral`, or `generated`) and an
 independent `access` (`ro`, `pinned`, `pinned_dir`, or `tmpfs`), plus a
