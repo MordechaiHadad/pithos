@@ -664,8 +664,11 @@ mod tests {
         fixture.init_repo();
         fixture.write("target.txt", "pointed at");
         fixture.commit("init");
-        crate::utils::platform::symlink(Path::new("target.txt"), &fixture.source.join("linked.txt"))
-            .unwrap();
+        crate::utils::platform::symlink(
+            Path::new("target.txt"),
+            &fixture.source.join("linked.txt"),
+        )
+        .unwrap();
 
         fixture.assert_matches_source(&[]);
         let link = fs::read_link(fixture.sandbox.path().join("linked.txt")).unwrap();

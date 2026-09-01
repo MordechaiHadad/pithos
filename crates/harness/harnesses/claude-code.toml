@@ -3,12 +3,17 @@ name = "claude-code"
 install = "RUN npm install --global @anthropic-ai/claude-code\n"
 
 # Credentials: gated on credentials = true
-[[mount]]
-host = ".claude/.credentials.json"
+[[credential]]
+source = "keychain:Claude Code-credentials"
 target = "/home/agent/.claude/.credentials.json"
-type = "credentials"
-access = "ro"
+platforms = ["macos"]
+on_missing = "warn"
+
+[[credential]]
+source = "file:.claude/.credentials.json"
+target = "/home/agent/.claude/.credentials.json"
 host_base = "home"
+on_missing = "warn"
 
 # State: pinned files / dirs
 [[mount]]

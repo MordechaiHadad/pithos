@@ -8,10 +8,10 @@ pub mod registry;
 pub mod translate;
 pub mod types;
 
-pub use def::HarnessDef;
+pub use def::{CredentialDef, HarnessDef};
 pub use harness::{Allowlist, Harness};
 pub use mount::tmpfs_spec;
-pub use types::{Access, HostBase, MountType, Translation};
+pub use types::{Access, HostBase, MountType, OnMissing, Platform, Translation};
 
 use std::path::Path;
 use std::process::Command;
@@ -21,7 +21,14 @@ pub trait HarnessSpec {
     fn install(&self) -> &str;
     fn mounts(&self) -> &[def::MountDef];
     fn allowlist_def(&self) -> &def::AllowlistDef;
-    fn mount(&self, command: &mut Command, session_id: &str, runtime_base: &Path, allowlist: Option<&Allowlist>, credentials_enabled: bool) -> eyre::Result<()>;
+    fn mount(
+        &self,
+        command: &mut Command,
+        session_id: &str,
+        runtime_base: &Path,
+        allowlist: Option<&Allowlist>,
+        credentials_enabled: bool,
+    ) -> eyre::Result<()>;
     fn environment(&self, allowlist: Option<&Allowlist>) -> Vec<(String, String)>;
 }
 
@@ -42,8 +49,22 @@ impl HarnessSpec for HarnessDef {
         &self.allowlist
     }
 
-    fn mount(&self, command: &mut Command, session_id: &str, runtime_base: &Path, allowlist: Option<&Allowlist>, credentials_enabled: bool) -> eyre::Result<()> {
-        mount::apply_mounts(self, command, session_id, runtime_base, allowlist, credentials_enabled)
+    fn mount(
+        &self,
+        command: &mut Command,
+        session_id: &str,
+        runtime_base: &Path,
+        allowlist: Option<&Allowlist>,
+        credentials_enabled: bool,
+    ) -> eyre::Result<()> {
+        mount::apply_mounts(
+            self,
+            command,
+            session_id,
+            runtime_base,
+            allowlist,
+            credentials_enabled,
+        )
     }
 
     fn environment(&self, allowlist: Option<&Allowlist>) -> Vec<(String, String)> {
@@ -57,7 +78,10 @@ impl HarnessSpec for HarnessDef {
                     .env_var
                     .clone()
                     .unwrap_or_else(|| "OPENCODE_CONFIG_CONTENT".to_string());
-                vec![(variable, serde_json::json!({ "permission": allowlist }).to_string())]
+                vec![(
+                    variable,
+                    serde_json::json!({ "permission": allowlist }).to_string(),
+                )]
             }
             types::Translation::None | types::Translation::ClaudeSettings => Vec::new(),
         }
@@ -88,7 +112,14 @@ impl HarnessSpec for Harness {
         &DUMMY
     }
 
-    fn mount(&self, command: &mut Command, session_id: &str, runtime_base: &Path, _allowlist: Option<&Allowlist>, _credentials_enabled: bool) -> eyre::Result<()> {
+    fn mount(
+        &self,
+        command: &mut Command,
+        session_id: &str,
+        runtime_base: &Path,
+        _allowlist: Option<&Allowlist>,
+        _credentials_enabled: bool,
+    ) -> eyre::Result<()> {
         Harness::mount(self, command, session_id, runtime_base)
     }
 

@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 mod config;
-mod utils;
 mod handlers;
 mod image;
 mod networking;
@@ -12,6 +11,7 @@ mod registry;
 mod sandbox;
 mod session;
 mod snapshot;
+mod utils;
 mod workspace;
 
 #[derive(Parser)]

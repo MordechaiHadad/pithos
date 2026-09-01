@@ -3,9 +3,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::process::Command;
 
-use crate::utils::agent::{AGENT_HOME, AGENT_USER};
 use crate::config::{Config, Download, ToolchainDef, UvTool};
 use crate::sandbox::TempDir;
+use crate::utils::agent::{AGENT_HOME, AGENT_USER};
 
 /// Container entrypoint that loads session egress rules into the network
 /// namespace before dropping to the unprivileged agent identity.

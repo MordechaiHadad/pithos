@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use super::types::{Access, HostBase, MountType, Translation};
+use super::types::{Access, HostBase, MountType, OnMissing, Platform, Translation};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -14,6 +14,9 @@ pub struct HarnessToml {
     #[serde(rename = "mount")]
     pub mounts: Vec<MountToml>,
     #[serde(default)]
+    #[serde(rename = "credential")]
+    pub credentials: Vec<CredentialToml>,
+    #[serde(default)]
     pub allowlist: AllowlistToml,
 }
 
@@ -26,6 +29,19 @@ pub struct MountToml {
     pub mount_type: MountType,
     pub access: Access,
     pub host_base: HostBase,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialToml {
+    pub source: String,
+    pub target: String,
+    #[serde(default)]
+    pub host_base: HostBase,
+    #[serde(default)]
+    pub platforms: Option<Vec<Platform>>,
+    #[serde(default)]
+    pub on_missing: OnMissing,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -42,6 +58,7 @@ pub struct HarnessDef {
     pub name: String,
     pub install: String,
     pub mounts: Vec<MountDef>,
+    pub credentials: Vec<CredentialDef>,
     pub allowlist: AllowlistDef,
 }
 
@@ -52,6 +69,15 @@ pub struct MountDef {
     pub mount_type: MountType,
     pub access: Access,
     pub host_base: HostBase,
+}
+
+#[derive(Debug, Clone)]
+pub struct CredentialDef {
+    pub source: String,
+    pub target: String,
+    pub host_base: HostBase,
+    pub platforms: Option<Vec<Platform>>,
+    pub on_missing: OnMissing,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +92,7 @@ impl From<HarnessToml> for HarnessDef {
             name: value.name,
             install: value.install,
             mounts: value.mounts.into_iter().map(Into::into).collect(),
+            credentials: value.credentials.into_iter().map(Into::into).collect(),
             allowlist: value.allowlist.into(),
         }
     }
@@ -79,6 +106,18 @@ impl From<MountToml> for MountDef {
             mount_type: value.mount_type,
             access: value.access,
             host_base: value.host_base,
+        }
+    }
+}
+
+impl From<CredentialToml> for CredentialDef {
+    fn from(value: CredentialToml) -> Self {
+        Self {
+            source: value.source,
+            target: value.target,
+            host_base: value.host_base,
+            platforms: value.platforms,
+            on_missing: value.on_missing,
         }
     }
 }

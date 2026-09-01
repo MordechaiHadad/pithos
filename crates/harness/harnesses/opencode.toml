@@ -3,12 +3,11 @@ name = "opencode"
 install = "RUN npm install --global opencode-ai\n"
 
 # Credentials: gated on credentials = true, read-only
-[[mount]]
-host = ".local/share/opencode/auth.json"
+[[credential]]
+source = "file:auth.json"
 target = "/home/agent/.local/share/opencode/auth.json"
-type = "credentials"
-access = "ro"
-host_base = "home"
+host_base = "data:opencode"
+on_missing = "warn"
 
 # State: pinned files that survive across sessions
 [[mount]]
@@ -59,6 +58,15 @@ target = "/home/agent/.local/state/opencode/prompt-history.jsonl"
 type = "state"
 access = "pinned"
 host_base = "state:opencode"
+
+# models.dev catalog cache: without it every session starts from the
+# version-bundled snapshot and newly released models stay hidden
+[[mount]]
+host = "models.json"
+target = "/home/agent/.cache/opencode/models.json"
+type = "state"
+access = "pinned"
+host_base = "cache:opencode"
 
 # Config: read-only when exists, required if credentials or allowlist present
 [[mount]]

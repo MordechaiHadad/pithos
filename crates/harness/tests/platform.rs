@@ -5,7 +5,10 @@ use pithos_harness::platform::volume_spec;
 #[test]
 fn volume_spec_selects_mutability() {
     let source = Path::new("/tmp/opencode");
-    assert_eq!(volume_spec(source, "/data", false), "/tmp/opencode:/data:rw");
+    assert_eq!(
+        volume_spec(source, "/data", false),
+        "/tmp/opencode:/data:rw"
+    );
     assert_eq!(
         volume_spec(source, "/config", true),
         "/tmp/opencode:/config:ro"

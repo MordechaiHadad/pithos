@@ -164,7 +164,8 @@ fn current_branch(sandbox: &Path) -> Result<String> {
 
 fn run_viewer(viewer: &str, repo: &Path) -> Result<()> {
     let command = viewer.replace("{dir}", &repo.display().to_string());
-    let status = crate::utils::platform::run_shell(&command).wrap_err("could not run diff_viewer")?;
+    let status =
+        crate::utils::platform::run_shell(&command).wrap_err("could not run diff_viewer")?;
     if !status.success() {
         eprintln!("diff_viewer exited with {status}");
     }

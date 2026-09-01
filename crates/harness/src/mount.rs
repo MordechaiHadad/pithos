@@ -5,10 +5,10 @@ use std::process::Command;
 use eyre::{WrapErr, eyre};
 
 use crate::agent::AGENT_HOME;
+use crate::def::{CredentialDef, HarnessDef, MountDef};
 use crate::harness::Allowlist;
-use crate::def::{HarnessDef, MountDef};
 use crate::platform;
-use crate::types::{Access, HostBase, MountType};
+use crate::types::{Access, HostBase, MountType, OnMissing, Platform};
 
 pub fn tmpfs_spec(target: &str) -> String {
     format!("{target}:rw,mode=1777")
@@ -36,6 +36,10 @@ pub fn resolve_host_path(
                 dirs::state_dir().ok_or_else(|| eyre!("cannot determine state directory"))?;
             Ok(base.join(app).join(&def.host))
         }
+        HostBase::Cache(app) => {
+            let base = dirs::cache_dir().ok_or_else(|| eyre!("cannot determine cache directory"))?;
+            Ok(base.join(app).join(&def.host))
+        }
         HostBase::Runtime => Ok(runtime_base.join(session_id).join(&def.host)),
     }
 }
@@ -48,16 +52,7 @@ pub fn apply_mounts(
     allowlist: Option<&Allowlist>,
     credentials_enabled: bool,
 ) -> eyre::Result<()> {
-    if def.name == "claude-code" {
-        let claude_dir = home_path(".claude")?;
-        let credentials_file = claude_dir.join(".credentials.json");
-        if let Some(warning) =
-            macos_credentials_warning(cfg!(target_os = "macos"), &credentials_file)
-            && credentials_enabled
-        {
-            eprintln!("{warning}");
-        }
-    }
+    apply_credentials(def, command, session_id, runtime_base, credentials_enabled)?;
 
     for mount in &def.mounts {
         match mount.mount_type {
@@ -195,6 +190,7 @@ fn write_claude_settings(
     Ok(Some(path))
 }
 
+#[allow(dead_code)]
 fn macos_credentials_warning(is_macos: bool, credentials_file: &Path) -> Option<String> {
     if !is_macos || credentials_file.exists() {
         return None;
@@ -206,4 +202,173 @@ fn macos_credentials_warning(is_macos: bool, credentials_file: &Path) -> Option<
          \x20 security find-generic-password -s \"Claude Code-credentials\" -w > '{file}' && chmod 600 '{file}'\n\
          \x20 or run `claude setup-token` and put CLAUDE_CODE_OAUTH_TOKEN under [environment]"
     ))
+}
+
+fn current_platform() -> Platform {
+    match std::env::consts::OS {
+        "macos" => Platform::Macos,
+        "windows" => Platform::Windows,
+        _ => Platform::Linux,
+    }
+}
+
+fn platform_matches(platforms: &Option<Vec<Platform>>) -> bool {
+    if let Some(list) = platforms {
+        list.contains(&current_platform())
+    } else {
+        true
+    }
+}
+
+fn resolve_credential_file_path(
+    def: &CredentialDef,
+    runtime_base: &Path,
+    session_id: &str,
+) -> eyre::Result<PathBuf> {
+    let host = def.source.strip_prefix("file:").unwrap_or(&def.source);
+    let trimmed = host.trim_start_matches("./");
+    match &def.host_base {
+        HostBase::Home => {
+            let home = dirs::home_dir().ok_or_else(|| eyre!("cannot determine home directory"))?;
+            Ok(home.join(trimmed))
+        }
+        HostBase::Data(app) => {
+            let base = dirs::data_dir().ok_or_else(|| eyre!("cannot determine data directory"))?;
+            Ok(base.join(app).join(trimmed))
+        }
+        HostBase::State(app) => {
+            let base =
+                dirs::state_dir().ok_or_else(|| eyre!("cannot determine state directory"))?;
+            Ok(base.join(app).join(trimmed))
+        }
+        HostBase::Cache(app) => {
+            let base = dirs::cache_dir().ok_or_else(|| eyre!("cannot determine cache directory"))?;
+            Ok(base.join(app).join(trimmed))
+        }
+        HostBase::Runtime => Ok(runtime_base.join(session_id).join(trimmed)),
+    }
+}
+
+fn keychain_export(service: &str) -> eyre::Result<Vec<u8>> {
+    let output = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", service, "-w"])
+        .output()
+        .wrap_err("cannot execute security")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eyre::bail!("security find-generic-password failed: {}", stderr.trim());
+    }
+    let mut data = output.stdout;
+    while data.ends_with(b"\n") || data.ends_with(b"\r") {
+        data.pop();
+    }
+    if data.is_empty() {
+        eyre::bail!("keychain service \"{service}\" returned empty data");
+    }
+    Ok(data)
+}
+
+fn sanitize_target(target: &str) -> String {
+    target
+        .replace('/', "_")
+        .replace('\\', "_")
+        .trim_start_matches('_')
+        .to_string()
+}
+
+fn apply_credentials(
+    def: &HarnessDef,
+    command: &mut Command,
+    session_id: &str,
+    runtime_base: &Path,
+    credentials_enabled: bool,
+) -> eyre::Result<()> {
+    if !credentials_enabled {
+        return Ok(());
+    }
+    if def.credentials.is_empty() {
+        return Ok(());
+    }
+    let mut mounted_targets = std::collections::HashSet::new();
+    for cred in &def.credentials {
+        if !platform_matches(&cred.platforms) {
+            continue;
+        }
+        if cred.target.is_empty() || !cred.target.starts_with('/') {
+            eyre::bail!(
+                "credential target must be absolute path, got \"{}\"",
+                cred.target
+            );
+        }
+        if mounted_targets.contains(&cred.target) {
+            continue;
+        }
+        if let Some(service) = cred.source.strip_prefix("keychain:") {
+            let service = service.trim();
+            if service.is_empty() {
+                eyre::bail!("keychain source requires service name");
+            }
+            match keychain_export(service) {
+                Ok(data) => {
+                    let dir = runtime_base.join(session_id).join("credentials");
+                    fs::create_dir_all(&dir)
+                        .wrap_err_with(|| format!("cannot create {}", dir.display()))?;
+                    let path = dir.join(sanitize_target(&cred.target));
+                    fs::write(&path, &data)
+                        .wrap_err_with(|| format!("cannot write {}", path.display()))?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let perm = fs::Permissions::from_mode(0o600);
+                        let _ = fs::set_permissions(&path, perm);
+                    }
+                    if let Err(e) = serde_json::from_slice::<serde_json::Value>(&data) {
+                        tracing::warn!(service, %e, "keychain output is not valid JSON");
+                    }
+                    mount_path(command, &path, &cred.target, true)?;
+                    mounted_targets.insert(cred.target.clone());
+                }
+                Err(error) => match cred.on_missing {
+                    OnMissing::Ignore => continue,
+                    OnMissing::Warn => {
+                        eprintln!(
+                            "warning: keychain service \"{service}\" not available ({error}); skipping credential {}",
+                            cred.target
+                        );
+                        continue;
+                    }
+                    OnMissing::Error => {
+                        eyre::bail!("keychain service \"{service}\" failed: {error}");
+                    }
+                },
+            }
+        } else if let Some(path) = cred.source.strip_prefix("file:") {
+            let _ = path;
+            let host = resolve_credential_file_path(cred, runtime_base, session_id)?;
+            if !host.exists() {
+                match cred.on_missing {
+                    OnMissing::Ignore => continue,
+                    OnMissing::Warn => {
+                        eprintln!(
+                            "warning: credential file {} not found; skipping {}",
+                            host.display(),
+                            cred.target
+                        );
+                        continue;
+                    }
+                    OnMissing::Error => {
+                        eyre::bail!("credential file {} not found", host.display());
+                    }
+                }
+            }
+            mount_path(command, &host, &cred.target, true)?;
+            mounted_targets.insert(cred.target.clone());
+        } else {
+            eyre::bail!(
+                "credential source must start with \"keychain:\" or \"file:\", got \"{}\"",
+                cred.source
+            );
+        }
+    }
+    Ok(())
 }

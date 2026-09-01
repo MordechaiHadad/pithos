@@ -28,11 +28,13 @@ pub enum Translation {
     ClaudeSettings,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum HostBase {
+    #[default]
     Home,
     Data(String),
     State(String),
+    Cache(String),
     Runtime,
 }
 
@@ -60,6 +62,13 @@ impl<'de> Deserialize<'de> for HostBase {
                 ));
             }
             Ok(Self::State(rest.to_string()))
+        } else if let Some(rest) = raw.strip_prefix("cache:") {
+            if rest.is_empty() {
+                return Err(serde::de::Error::custom(
+                    "cache host_base requires an application",
+                ));
+            }
+            Ok(Self::Cache(rest.to_string()))
         } else {
             Err(serde::de::Error::unknown_variant(
                 &raw,
@@ -68,8 +77,33 @@ impl<'de> Deserialize<'de> for HostBase {
                     "runtime",
                     "data:<application>",
                     "state:<application>",
+                    "cache:<application>",
                 ][..],
             ))
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Platform {
+    Macos,
+    Linux,
+    Windows,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OnMissing {
+    #[default]
+    Warn,
+    Error,
+    Ignore,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialSourceKind {
+    File,
+    Keychain,
 }

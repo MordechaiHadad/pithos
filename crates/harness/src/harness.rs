@@ -39,7 +39,12 @@ impl Harness {
         &self.name
     }
 
-    pub fn mount(&self, command: &mut Command, session_id: &str, runtime_base: &Path) -> Result<()> {
+    pub fn mount(
+        &self,
+        command: &mut Command,
+        session_id: &str,
+        runtime_base: &Path,
+    ) -> Result<()> {
         let definition = self.require_definition()?;
         crate::mount::apply_mounts(
             &definition,

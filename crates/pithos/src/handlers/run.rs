@@ -121,9 +121,18 @@ fn run_session(
     for (key, value) in &config.environment {
         command.args(["--env", &format!("{key}={value}")]);
     }
-    command.args(["--env", &format!("HOME={}", crate::utils::agent::AGENT_HOME)]);
-    command.args(["--env", &format!("{}={uid}", crate::utils::agent::AGENT_UID_ENV)]);
-    command.args(["--env", &format!("{}={gid}", crate::utils::agent::AGENT_GID_ENV)]);
+    command.args([
+        "--env",
+        &format!("HOME={}", crate::utils::agent::AGENT_HOME),
+    ]);
+    command.args([
+        "--env",
+        &format!("{}={uid}", crate::utils::agent::AGENT_UID_ENV),
+    ]);
+    command.args([
+        "--env",
+        &format!("{}={gid}", crate::utils::agent::AGENT_GID_ENV),
+    ]);
     if !config.environment.contains_key("XDG_RUNTIME_DIR") {
         command.args(["--env", &format!("XDG_RUNTIME_DIR={runtime_dir}")]);
     }
@@ -143,7 +152,11 @@ fn run_session(
             command.args(["--env", &format!("{key}={value}")]);
         }
     }
-    config.harness.mount(&mut command, &record.identity.id, &crate::registry::runtime_dir())?;
+    config.harness.mount(
+        &mut command,
+        &record.identity.id,
+        &crate::registry::runtime_dir(),
+    )?;
     config.networking.apply_to_resolved(
         &mut command,
         &whitelist_addresses.0,
@@ -384,7 +397,10 @@ fn update_snapshot(
 /// and both only read during normal operation.
 fn live_tier_env() -> [(&'static str, String); 2] {
     [
-        ("CARGO_HOME", format!("{}/.cargo", crate::utils::agent::AGENT_HOME)),
+        (
+            "CARGO_HOME",
+            format!("{}/.cargo", crate::utils::agent::AGENT_HOME),
+        ),
         (
             "NPM_CONFIG_PREFIX",
             format!("{}/.local", crate::utils::agent::AGENT_HOME),

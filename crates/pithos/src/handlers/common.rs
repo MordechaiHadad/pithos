@@ -1,8 +1,8 @@
 use eyre::{Result, WrapErr, bail};
 use std::process::Command;
 
-use crate::utils::environment;
 use crate::registry::{self, SessionRecord};
+use crate::utils::environment;
 
 pub(crate) fn resolve_session(session_id: Option<&str>) -> Result<SessionRecord> {
     let session = registry::resolve(&registry::prune()?, session_id)?;
