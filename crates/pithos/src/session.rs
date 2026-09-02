@@ -72,14 +72,14 @@ pub(crate) fn summarize(changed: &[PathBuf], source: &Path, sandbox: &Path) {
     if !breakdown.is_empty() {
         line.push_str(&format!(" ({})", breakdown.join(", ")));
     }
-    tracing::info!("{line}");
+    println!("{line}");
     for relative in changed.iter().take(20) {
         let kind = change_kind(source, sandbox, relative);
         let styled = style_for_kind(kind).apply_to(format!("  {}", relative.display()));
-        tracing::info!("{styled}");
+        println!("{styled}");
     }
     if changed.len() > 20 {
-        tracing::info!("  ... and {} more", changed.len() - 20);
+        println!("  ... and {} more", changed.len() - 20);
     }
 }
 

@@ -26,6 +26,9 @@ name = "opencode"
 command = ["opencode", "/workspace"]
 credentials = true
 
+[environment]
+OPENCODE_ENABLE_EXA = "1"
+
 # [harness.allowlist]
 # edit = "allow"
 
