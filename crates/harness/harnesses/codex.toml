@@ -16,66 +16,11 @@ target = "/home/agent/.codex/auth.json"
 platforms = ["macos"]
 on_missing = "warn"
 
-# Parent dir: tmpfs so codex can create runtime databases (state_5, logs_N,
-# wal/shm siblings) that are not pinned individually. Without this the
-# directory only materializes as an implicit mount parent (root-owned 0755)
-# and codex fails with sqlite "unable to open database file" (code 14).
 [[mount]]
-host = ""
+host = ".codex"
 target = "/home/agent/.codex"
-type = "ephemeral"
-access = "tmpfs"
-host_base = "home"
-
-# State: pinned files that survive across sessions (history, sessions, SQLite)
-[[mount]]
-host = ".codex/history.jsonl"
-target = "/home/agent/.codex/history.jsonl"
-type = "state"
-access = "pinned"
-host_base = "home"
-
-[[mount]]
-host = ".codex/sessions"
-target = "/home/agent/.codex/sessions"
 type = "state"
 access = "pinned_dir"
-host_base = "home"
-
-[[mount]]
-host = ".codex/state_5.sqlite"
-target = "/home/agent/.codex/state_5.sqlite"
-type = "state"
-access = "pinned"
-host_base = "home"
-
-[[mount]]
-host = ".codex/state_5.sqlite-wal"
-target = "/home/agent/.codex/state_5.sqlite-wal"
-type = "state"
-access = "pinned"
-host_base = "home"
-
-[[mount]]
-host = ".codex/state_5.sqlite-shm"
-target = "/home/agent/.codex/state_5.sqlite-shm"
-type = "state"
-access = "pinned"
-host_base = "home"
-
-[[mount]]
-host = ".codex/models_cache.json"
-target = "/home/agent/.codex/models_cache.json"
-type = "state"
-access = "pinned"
-host_base = "home"
-
-# Config: read-only when exists
-[[mount]]
-host = ".codex/config.toml"
-target = "/home/agent/.codex/config.toml"
-type = "config"
-access = "ro"
 host_base = "home"
 
 [[mount]]
