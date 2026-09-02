@@ -143,7 +143,7 @@ fn build_session_view(source: &Path, sandbox: &Path, unmanaged: &[String]) -> Re
     let repo_path = repo_dir.display().to_string();
     git_ok(source, &["clone", &bundle_path, &repo_path])
         .wrap_err("could not clone session bundle")?;
-    apply_tree(sandbox, &repo_dir, unmanaged, CopyMethod::Reflink, None)?;
+    apply_tree(sandbox, &repo_dir, unmanaged, CopyMethod::Copy, None)?;
     Ok(temp)
 }
 

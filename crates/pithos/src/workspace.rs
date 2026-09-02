@@ -5,14 +5,14 @@
 //! 1. **Reflink**: the filesystem provides kernel-level CoW clones
 //!    (FICLONE, clonefile, ReFS block cloning); every file is cloned
 //!    through [`crate::sandbox::copy_tree`] at metadata cost.
-//! 2. **Worktree**: the source is a usable git repository; objects stay in
-//!    the origin repository and are mounted into the container read-only
-//!    while the checkout materializes only tracked working files.
+//! 2. **Worktree**: the source is a usable git repository; a real
+//!    `git worktree add` shares the object store and checks out `HEAD`
+//!    with a git command, then overlays dirty/untracked files with a
+//!    plain `fs::copy`.
 //! 3. **Copy**: plain parallel byte copy with no reflink attempts.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use tempfile::{NamedTempFile, tempdir_in};
 
 use eyre::{Result, WrapErr, bail};
 
@@ -21,11 +21,7 @@ use crate::sandbox::{
 };
 use crate::session::{git, git_ok};
 
-/// Location inside the container where the origin repository's git object
-/// database is mounted read-only for worktier sandboxes. Host-side tooling
-/// never resolves this path: change detection and apply-back are pure
-/// filesystem operations, and diff views read objects from the source repo.
-pub(crate) const CONTAINER_GIT_OBJECTS: &str = "/pithos/git-objects";
+
 
 /// Workspace population tier. `Reflink` and `Copy` are direct file-copy
 /// tiers that map to [`crate::sandbox::CopyMethod`] via [`Self::copy_method`],
@@ -50,8 +46,8 @@ impl CopyStrategy {
 
     pub(crate) fn copy_method(self) -> CopyMethod {
         match self {
-            Self::Reflink | Self::Worktree => CopyMethod::Reflink,
-            Self::Copy => CopyMethod::Copy,
+            Self::Reflink => CopyMethod::Reflink,
+            Self::Worktree | Self::Copy => CopyMethod::Copy,
         }
     }
 
@@ -91,17 +87,13 @@ pub(crate) fn detect(source: &Path) -> Result<CopyStrategy> {
     }
 }
 
-/// Returns the volume argument for the worktree tier, if applicable.
-pub(crate) fn worktree_volume_arg(repository: &Path, strategy: CopyStrategy) -> Option<String> {
-    if strategy == CopyStrategy::Worktree {
-        let objects_dir = repository.join(".git").join("objects");
-        Some(format!(
-            "{}:{CONTAINER_GIT_OBJECTS}:ro,Z",
-            objects_dir.display()
-        ))
-    } else {
-        None
-    }
+pub(crate) fn try_remove_worktree(repository: &Path, sandbox: &Path) {
+    let sandbox_display = sandbox.display().to_string();
+    let _ = git(
+        repository,
+        &["worktree", "remove", "--force", &sandbox_display],
+    );
+    let _ = git(repository, &["worktree", "prune"]);
 }
 
 /// Populates an empty sandbox directory using the forced strategy or, when
@@ -242,25 +234,14 @@ fn require_worktree_eligible(source: &Path) -> Result<()> {
     }
 }
 
-/// Whether the current filesystem can serve kernel-level CoW clones.
-///
-/// Probes with two scratch files in the same directory the sandboxes live
-/// in, because reflink support is a property of the underlying filesystem,
-/// not of the source tree.
+/// ReFS block cloning on Windows; `check_reflink_support` is precise there,
+/// `Unknown` (Linux/macOS) counts as not supported.
 fn reflink_supported() -> Result<bool> {
     let base = temporary_base()?;
-    let probe_dir = tempdir_in(&base)?;
-    let first = NamedTempFile::new_in(probe_dir.path())?;
-    let second = probe_dir.path().join("clone");
-    fs::write(first.path(), b"pithos reflink probe")?;
-    let supported = match reflink_copy::reflink(first.path(), &second) {
-        Ok(()) => true,
-        Err(error) => {
-            tracing::trace!(%error, "reflink probe failed");
-            false
-        }
-    };
-    Ok(supported)
+    Ok(matches!(
+        reflink_copy::check_reflink_support(&base, &base),
+        Ok(reflink_copy::ReflinkSupport::Supported)
+    ))
 }
 
 /// Whether the source repository can back a shared-object sandbox: it must
@@ -282,35 +263,25 @@ fn populate_worktree(source: &Path, sandbox: &Path, ignore: &[String]) -> Result
         bail!("repository cannot back a shared-object sandbox");
     }
     let head = head_commit(source)?;
-    let head = head.as_str();
-    let source_display = source.display().to_string();
+    if sandbox.exists() {
+        fs::remove_dir_all(sandbox)
+            .wrap_err("could not clear sandbox for worktree")?;
+    }
     let sandbox_display = sandbox.display().to_string();
     git_ok(
         source,
-        &[
-            "clone",
-            "--quiet",
-            "--shared",
-            "--no-checkout",
-            &source_display,
-            &sandbox_display,
-        ],
+        &["worktree", "add", "--quiet", "--detach", &sandbox_display, &head],
     )
-    .wrap_err("shared clone failed")?;
-    let reset_args = ["reset", "--hard", head];
-    git_ok(sandbox, &reset_args).wrap_err("checkout of the session commit failed")?;
-    retarget_alternates(sandbox)?;
-    overlay_dirty_files(source, sandbox)?;
-    fill_untracked_files(source, sandbox, ignore)
-}
-
-/// Points the sandbox object store at the read-only container mount of the
-/// origin repository's objects. Written after every operation that still
-/// needs to resolve objects against the clone-written host path.
-fn retarget_alternates(sandbox: &Path) -> Result<()> {
-    let alternates = sandbox.join(".git").join("objects/info/alternates");
-    fs::write(&alternates, format!("{CONTAINER_GIT_OBJECTS}\n"))
-        .wrap_err("could not retune sandbox object directory")
+    .wrap_err("worktree add failed")?;
+    let overlay_result = (|| -> Result<()> {
+        overlay_dirty_files(source, sandbox)?;
+        fill_untracked_files(source, sandbox, ignore)
+    })();
+    if overlay_result.is_err() {
+        let _ = git(source, &["worktree", "remove", "--force", &sandbox_display]);
+        let _ = fs::remove_dir_all(sandbox);
+    }
+    overlay_result
 }
 
 fn head_commit(source: &Path) -> Result<String> {
@@ -343,7 +314,7 @@ fn overlay_dirty_files(source: &Path, sandbox: &Path) -> Result<()> {
                 &source_path,
                 &sandbox_path,
                 DestinationSafety::Fresh,
-                CopyMethod::Reflink,
+                CopyMethod::Copy,
             )?;
         } else if fs::symlink_metadata(&sandbox_path).is_ok() {
             remove_path(&sandbox_path)?;
@@ -417,7 +388,7 @@ fn fill_untracked_files(source: &Path, sandbox: &Path, ignore: &[String]) -> Res
                 &source.join(&relative),
                 &destination,
                 DestinationSafety::Fresh,
-                CopyMethod::Reflink,
+                CopyMethod::Copy,
             )?;
         }
     }
@@ -447,7 +418,7 @@ fn copy_untracked_directory(
                 &entry.path(),
                 &sandbox.join(&child_relative),
                 DestinationSafety::Fresh,
-                CopyMethod::Reflink,
+                CopyMethod::Copy,
             )?;
         }
     }
@@ -710,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn alternates_target_the_container_mount() {
+    fn worktree_creates_gitdir_file() {
         let fixture = RepoFixture::new("pithos-test-tier-alternates");
         fixture.init_repo();
         fixture.write("a.txt", "content");
@@ -724,14 +695,19 @@ mod tests {
         )
         .unwrap();
 
-        let alternates =
-            fs::read_to_string(fixture.sandbox.path().join(".git/objects/info/alternates"))
-                .unwrap();
-        assert_eq!(alternates.trim(), CONTAINER_GIT_OBJECTS);
+        let git_path = fixture.sandbox.path().join(".git");
+        assert!(git_path.exists(), ".git should exist for worktree");
+        let git_content = fs::read_to_string(&git_path).unwrap_or_default();
+        assert!(
+            git_content.contains("gitdir:"),
+            ".git should be a gitdir file for worktree, got: {git_content:?}"
+        );
+        let output = git(fixture.sandbox.path(), &["log", "--oneline", "-1"]).unwrap();
+        assert!(output.status.success(), "worktree git should resolve HEAD");
     }
 
     #[test]
-    fn sandbox_git_reads_objects_through_the_host_alternate_line() {
+    fn sandbox_git_reads_objects_through_worktree() {
         let fixture = RepoFixture::new("pithos-test-tier-host-git");
         fixture.init_repo();
         fixture.write("a.txt", "content");
@@ -745,16 +721,9 @@ mod tests {
         )
         .unwrap();
 
-        let alternates_path = fixture.sandbox.path().join(".git/objects/info/alternates");
-        let objects = fixture.source.join(".git/objects");
-        let host_line = objects.display().to_string().replace('\\', "/");
-        fs::write(
-            &alternates_path,
-            format!("{CONTAINER_GIT_OBJECTS}\n{host_line}\n"),
-        )
-        .unwrap();
-
         let output = git(fixture.sandbox.path(), &["log", "--oneline", "-1"]).unwrap();
-        assert!(output.status.success(), "host-side git broke on alternates");
+        assert!(output.status.success(), "worktree git broke");
+        let output2 = git(fixture.sandbox.path(), &["status", "--porcelain"]).unwrap();
+        assert!(output2.status.success());
     }
 }

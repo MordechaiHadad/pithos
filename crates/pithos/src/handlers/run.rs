@@ -8,7 +8,7 @@ use crate::registry;
 use crate::sandbox::{TempDir, has_changes, sweep_orphans};
 use crate::session;
 use crate::session::strip_remotes;
-use crate::workspace::{CopyStrategy, parse_override, populate_sandbox, worktree_volume_arg};
+use crate::workspace::{CopyStrategy, parse_override, populate_sandbox, try_remove_worktree};
 
 pub(crate) fn run(
     config_path: Option<&Path>,
@@ -103,13 +103,6 @@ fn run_session(
         "--volume",
         &format!("{}:{}:rw,Z", sandbox.path().display(), config.workspace),
     ]);
-    if let Some(volume) = worktree_volume_arg(repository, strategy) {
-        tracing::debug!(
-            volume,
-            "mounting origin git objects read-only for the worktree tier"
-        );
-        command.args(["--volume", &volume]);
-    }
     command.args(["--workdir", &config.workspace]);
     command.args(["--tmpfs", &pithos_harness::tmpfs_spec("/tmp")]);
     let runtime_dir = format!("/run/user/{uid}");
@@ -241,6 +234,9 @@ fn run_session(
     } else {
         crate::snapshot::remove_snapshot(&record.identity.id);
     }
+    if strategy == CopyStrategy::Worktree {
+        try_remove_worktree(repository, sandbox.path());
+    }
     if !status.success() {
         eyre::bail!("harness exited with {status}")
     }
@@ -259,33 +255,28 @@ struct PreparedSession {
     whitelist_addresses: (Vec<std::net::Ipv4Addr>, Vec<std::net::Ipv6Addr>),
 }
 
-/// Prepares the sandbox while the image freshness check or build runs on a
-/// parallel thread. The two steps touch disjoint state, so the workspace copy
-/// hides inside the image preparation window and both must succeed before a
-/// container starts.
+/// Ensures the image is built before touching the filesystem or network.
+/// The freshness check and optional build run first; only once the image is
+/// ready do the workspace copy and whitelist resolution run in parallel.
 fn prepare_session(
     config: &Config,
     repository: &Path,
     forced_strategy: Option<CopyStrategy>,
 ) -> Result<PreparedSession> {
     let _span = tracing::debug_span!("session preparation").entered();
+    {
+        let _span = tracing::debug_span!("image preparation").entered();
+        let up_to_date = config.image_up_to_date()?;
+        tracing::debug!(up_to_date, "image freshness checked");
+        if !up_to_date {
+            config.build_image()?;
+        }
+    }
     std::thread::scope(|scope| {
-        let builder = scope.spawn(|| -> Result<()> {
-            let _span = tracing::debug_span!("image preparation").entered();
-            let up_to_date = config.image_up_to_date()?;
-            tracing::debug!(up_to_date, "image freshness checked");
-            if !up_to_date {
-                config.build_image()?;
-            }
-            Ok(())
-        });
         let whitelist_resolver = scope.spawn(|| config.networking.resolve_whitelist());
         let prepared = prepare_workspace(config, repository, forced_strategy);
         match prepared {
             Ok(pair) => {
-                builder
-                    .join()
-                    .map_err(|_| eyre!("image preparation thread panicked"))??;
                 let whitelist_addresses = whitelist_resolver
                     .join()
                     .map_err(|_| eyre!("whitelist resolver thread panicked"))?;
@@ -295,7 +286,6 @@ fn prepare_session(
                 })
             }
             Err(prepare_error) => {
-                let _ = builder.join();
                 let _ = whitelist_resolver.join();
                 Err(prepare_error)
             }

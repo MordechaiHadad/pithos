@@ -140,12 +140,12 @@ fn copy_method_for_session(session: &registry::SessionRecord) -> CopyMethod {
             Ok(Some(strategy)) => strategy.copy_method(),
             _ => match label {
                 "reflink" => CopyMethod::Reflink,
-                "worktree" => CopyMethod::Reflink,
+                "worktree" => CopyMethod::Copy,
                 "copy" => CopyMethod::Copy,
-                _ => CopyMethod::Reflink,
+                _ => CopyMethod::Copy,
             },
         },
-        None => CopyMethod::Reflink,
+        None => CopyMethod::Copy,
     }
 }
 
