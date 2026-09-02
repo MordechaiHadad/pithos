@@ -22,27 +22,91 @@ pub fn resolve_host_path(
     if def.host.is_empty() {
         return Ok(PathBuf::new());
     }
+    let candidates = host_candidates(def, runtime_base, session_id)?;
+    Ok(pick_existing(candidates))
+}
+
+fn host_candidates(
+    def: &MountDef,
+    runtime_base: &Path,
+    session_id: &str,
+) -> eyre::Result<Vec<PathBuf>> {
     match &def.host_base {
         HostBase::Home => {
             let home = dirs::home_dir().ok_or_else(|| eyre!("cannot determine home directory"))?;
-            Ok(home.join(&def.host))
+            Ok(vec![home.join(&def.host)])
         }
         HostBase::Data(app) => {
-            let base = dirs::data_dir().ok_or_else(|| eyre!("cannot determine data directory"))?;
-            Ok(base.join(app).join(&def.host))
+            let mut candidates = Vec::new();
+            if let Some(base) = dirs::data_dir() {
+                candidates.push(base.join(app).join(&def.host));
+            }
+            if let Some(fallback) = windows_data_fallback(app, &def.host) {
+                if !candidates.contains(&fallback) {
+                    candidates.push(fallback);
+                }
+            }
+            if candidates.is_empty() {
+                eyre::bail!("cannot determine data directory");
+            }
+            Ok(candidates)
         }
         HostBase::State(app) => {
-            let base =
-                dirs::state_dir().ok_or_else(|| eyre!("cannot determine state directory"))?;
-            Ok(base.join(app).join(&def.host))
+            let mut candidates = Vec::new();
+            if let Some(base) = dirs::state_dir() {
+                candidates.push(base.join(app).join(&def.host));
+            }
+            if let Some(fallback) = windows_state_fallback(app, &def.host) {
+                if !candidates.contains(&fallback) {
+                    candidates.push(fallback);
+                }
+            }
+            if candidates.is_empty() {
+                eyre::bail!("cannot determine state directory");
+            }
+            Ok(candidates)
         }
         HostBase::Cache(app) => {
-            let base =
-                dirs::cache_dir().ok_or_else(|| eyre!("cannot determine cache directory"))?;
-            Ok(base.join(app).join(&def.host))
+            let mut candidates = Vec::new();
+            if let Some(base) = dirs::cache_dir() {
+                candidates.push(base.join(app).join(&def.host));
+            }
+            if let Some(fallback) = windows_cache_fallback(app, &def.host) {
+                if !candidates.contains(&fallback) {
+                    candidates.push(fallback);
+                }
+            }
+            if candidates.is_empty() {
+                eyre::bail!("cannot determine cache directory");
+            }
+            Ok(candidates)
         }
-        HostBase::Runtime => Ok(runtime_base.join(session_id).join(&def.host)),
+        HostBase::Runtime => Ok(vec![runtime_base.join(session_id).join(&def.host)]),
     }
+}
+
+fn pick_existing(candidates: Vec<PathBuf>) -> PathBuf {
+    for candidate in &candidates {
+        if candidate.exists() {
+            return candidate.clone();
+        }
+    }
+    candidates.into_iter().next().unwrap_or_else(PathBuf::new)
+}
+
+fn windows_data_fallback(app: &str, host: &str) -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(home.join(".local").join("share").join(app).join(host))
+}
+
+fn windows_state_fallback(app: &str, host: &str) -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(home.join(".local").join("state").join(app).join(host))
+}
+
+fn windows_cache_fallback(app: &str, host: &str) -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(home.join(".cache").join(app).join(host))
 }
 
 pub fn apply_mounts(
@@ -228,26 +292,67 @@ fn resolve_credential_file_path(
 ) -> eyre::Result<PathBuf> {
     let host = def.source.strip_prefix("file:").unwrap_or(&def.source);
     let trimmed = host.trim_start_matches("./");
-    match &def.host_base {
+    let candidates = credential_candidates(&def.host_base, trimmed, runtime_base, session_id)?;
+    Ok(pick_existing(candidates))
+}
+
+fn credential_candidates(
+    host_base: &HostBase,
+    trimmed: &str,
+    runtime_base: &Path,
+    session_id: &str,
+) -> eyre::Result<Vec<PathBuf>> {
+    match host_base {
         HostBase::Home => {
             let home = dirs::home_dir().ok_or_else(|| eyre!("cannot determine home directory"))?;
-            Ok(home.join(trimmed))
+            Ok(vec![home.join(trimmed)])
         }
         HostBase::Data(app) => {
-            let base = dirs::data_dir().ok_or_else(|| eyre!("cannot determine data directory"))?;
-            Ok(base.join(app).join(trimmed))
+            let mut candidates = Vec::new();
+            if let Some(base) = dirs::data_dir() {
+                candidates.push(base.join(app).join(trimmed));
+            }
+            if let Some(fallback) = windows_data_fallback(app, trimmed) {
+                if !candidates.contains(&fallback) {
+                    candidates.push(fallback);
+                }
+            }
+            if candidates.is_empty() {
+                eyre::bail!("cannot determine data directory");
+            }
+            Ok(candidates)
         }
         HostBase::State(app) => {
-            let base =
-                dirs::state_dir().ok_or_else(|| eyre!("cannot determine state directory"))?;
-            Ok(base.join(app).join(trimmed))
+            let mut candidates = Vec::new();
+            if let Some(base) = dirs::state_dir() {
+                candidates.push(base.join(app).join(trimmed));
+            }
+            if let Some(fallback) = windows_state_fallback(app, trimmed) {
+                if !candidates.contains(&fallback) {
+                    candidates.push(fallback);
+                }
+            }
+            if candidates.is_empty() {
+                eyre::bail!("cannot determine state directory");
+            }
+            Ok(candidates)
         }
         HostBase::Cache(app) => {
-            let base =
-                dirs::cache_dir().ok_or_else(|| eyre!("cannot determine cache directory"))?;
-            Ok(base.join(app).join(trimmed))
+            let mut candidates = Vec::new();
+            if let Some(base) = dirs::cache_dir() {
+                candidates.push(base.join(app).join(trimmed));
+            }
+            if let Some(fallback) = windows_cache_fallback(app, trimmed) {
+                if !candidates.contains(&fallback) {
+                    candidates.push(fallback);
+                }
+            }
+            if candidates.is_empty() {
+                eyre::bail!("cannot determine cache directory");
+            }
+            Ok(candidates)
         }
-        HostBase::Runtime => Ok(runtime_base.join(session_id).join(trimmed)),
+        HostBase::Runtime => Ok(vec![runtime_base.join(session_id).join(trimmed)]),
     }
 }
 
@@ -332,9 +437,11 @@ fn apply_credentials(
                 Err(error) => match cred.on_missing {
                     OnMissing::Ignore => continue,
                     OnMissing::Warn => {
-                        eprintln!(
-                            "warning: keychain service \"{service}\" not available ({error}); skipping credential {}",
-                            cred.target
+                        tracing::warn!(
+                            service,
+                            %error,
+                            target = %cred.target,
+                            "keychain service not available; skipping credential"
                         );
                         continue;
                     }
@@ -350,10 +457,10 @@ fn apply_credentials(
                 match cred.on_missing {
                     OnMissing::Ignore => continue,
                     OnMissing::Warn => {
-                        eprintln!(
-                            "warning: credential file {} not found; skipping {}",
-                            host.display(),
-                            cred.target
+                        tracing::warn!(
+                            path = %host.display(),
+                            target = %cred.target,
+                            "credential file not found; skipping"
                         );
                         continue;
                     }

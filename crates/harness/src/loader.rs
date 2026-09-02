@@ -6,14 +6,43 @@ use eyre::WrapErr;
 use crate::def::HarnessDef;
 
 pub fn user_harness_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join("pithos").join("harnesses"))
+    config_dir_candidates()
+        .into_iter()
+        .find(|candidate| candidate.join("pithos").join("harnesses").exists())
+        .or_else(|| dirs::config_dir().map(|dir| dir.join("pithos").join("harnesses")))
+        .or_else(windows_config_fallback)
+}
+
+fn config_dir_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(dir) = dirs::config_dir() {
+        candidates.push(dir);
+    }
+    if let Some(fallback) = windows_config_fallback() {
+        if !candidates.contains(&fallback) {
+            candidates.push(fallback);
+        }
+    }
+    candidates
+}
+
+fn windows_config_fallback() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(home.join(".config"))
 }
 
 pub fn load_user_harnesses() -> Vec<HarnessDef> {
-    let Some(dir) = user_harness_dir() else {
-        return Vec::new();
-    };
-    load_from_dir(&dir)
+    let mut combined: std::collections::BTreeMap<String, HarnessDef> =
+        std::collections::BTreeMap::new();
+    for base in config_dir_candidates() {
+        let dir = base.join("pithos").join("harnesses");
+        for def in load_from_dir(&dir) {
+            combined.insert(def.name.clone(), def);
+        }
+    }
+    let mut out: Vec<HarnessDef> = combined.into_values().collect();
+    out.sort_by(|left, right| left.name.cmp(&right.name));
+    out
 }
 
 pub fn load_from_dir(dir: &Path) -> Vec<HarnessDef> {

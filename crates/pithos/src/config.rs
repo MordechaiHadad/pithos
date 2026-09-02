@@ -401,18 +401,39 @@ struct ToolchainLibrary {
     defs: BTreeMap<String, ToolchainDef>,
 }
 
+fn windows_config_fallback() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(home.join(".config"))
+}
+
+fn config_dir_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(dir) = dirs::config_dir() {
+        candidates.push(dir);
+    }
+    if let Some(fallback) = windows_config_fallback() {
+        if !candidates.contains(&fallback) {
+            candidates.push(fallback);
+        }
+    }
+    candidates
+}
+
 fn load_global_toolchains() -> Result<BTreeMap<String, ToolchainDef>> {
-    let Some(dir) = dirs::config_dir() else {
-        return Ok(BTreeMap::new());
-    };
-    let path = dir.join("pithos").join("toolchains.toml");
-    if !path.exists() {
+    for base in config_dir_candidates() {
+        let path = base.join("pithos").join("toolchains.toml");
+        if path.exists() {
+            let library: ToolchainLibrary = toml::from_str(
+                &fs::read_to_string(&path).wrap_err("cannot read global toolchains.toml")?,
+            )
+            .wrap_err("invalid global toolchains.toml")?;
+            return Ok(library.defs);
+        }
+    }
+    if config_dir_candidates().is_empty() {
         return Ok(BTreeMap::new());
     }
-    let library: ToolchainLibrary =
-        toml::from_str(&fs::read_to_string(&path).wrap_err("cannot read global toolchains.toml")?)
-            .wrap_err("invalid global toolchains.toml")?;
-    Ok(library.defs)
+    Ok(BTreeMap::new())
 }
 
 fn resolve_config(explicit: Option<&Path>) -> Result<PathBuf> {
@@ -424,15 +445,19 @@ fn resolve_config(explicit: Option<&Path>) -> Result<PathBuf> {
     if local.exists() {
         return fs::canonicalize(local).wrap_err("cannot read local pithos.toml");
     }
-    let global = dirs::config_dir()
+    for base in config_dir_candidates() {
+        let global = base.join("pithos/pithos.toml");
+        if global.exists() {
+            return fs::canonicalize(global).wrap_err("cannot read global pithos.toml");
+        }
+    }
+    let primary = dirs::config_dir()
+        .or_else(windows_config_fallback)
         .ok_or_else(|| eyre!("cannot determine config directory"))?
         .join("pithos/pithos.toml");
-    if global.exists() {
-        return fs::canonicalize(global).wrap_err("cannot read global pithos.toml");
-    }
     bail!(
         "no config found: tried ./pithos.toml and {}",
-        global.display()
+        primary.display()
     )
 }
 

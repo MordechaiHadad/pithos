@@ -21,8 +21,6 @@ use crate::sandbox::{
 };
 use crate::session::{git, git_ok};
 
-
-
 /// Workspace population tier. `Reflink` and `Copy` are direct file-copy
 /// tiers that map to [`crate::sandbox::CopyMethod`] via [`Self::copy_method`],
 /// while `Worktree` is a git-aware tier that clones with shared objects and
@@ -264,13 +262,19 @@ fn populate_worktree(source: &Path, sandbox: &Path, ignore: &[String]) -> Result
     }
     let head = head_commit(source)?;
     if sandbox.exists() {
-        fs::remove_dir_all(sandbox)
-            .wrap_err("could not clear sandbox for worktree")?;
+        fs::remove_dir_all(sandbox).wrap_err("could not clear sandbox for worktree")?;
     }
     let sandbox_display = sandbox.display().to_string();
     git_ok(
         source,
-        &["worktree", "add", "--quiet", "--detach", &sandbox_display, &head],
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            &sandbox_display,
+            &head,
+        ],
     )
     .wrap_err("worktree add failed")?;
     let overlay_result = (|| -> Result<()> {
