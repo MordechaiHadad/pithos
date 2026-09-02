@@ -182,22 +182,6 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<Output> {
         .wrap_err("could not run git")
 }
 
-/// Removes every configured remote from `repository`'s git config.
-///
-/// Sandboxes must not reach the network through the user's remotes. Safe to
-/// call on any sandbox because each tier owns a private config file.
-pub(crate) fn strip_remotes(repository: &Path) -> Result<()> {
-    let output = git(repository, &["remote"])?;
-    for name in String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|name| !name.is_empty())
-    {
-        git_ok(repository, &["remote", "remove", name])
-            .wrap_err_with(|| format!("could not remove remote {name}"))?;
-    }
-    Ok(())
-}
-
 pub(crate) fn git_ok(dir: &Path, args: &[&str]) -> Result<()> {
     let output = git(dir, args)?;
     if output.status.success() {

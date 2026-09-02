@@ -7,7 +7,6 @@ use crate::config::Config;
 use crate::registry;
 use crate::sandbox::{TempDir, has_changes, sweep_orphans};
 use crate::session;
-use crate::session::strip_remotes;
 use crate::workspace::{CopyStrategy, parse_override, populate_sandbox, try_remove_worktree};
 
 pub(crate) fn run(
@@ -305,8 +304,6 @@ fn prepare_workspace(
 ) -> Result<PreparedSession> {
     let sandbox = TempDir::create("pithos-workspace")?;
     let strategy = populate_sandbox(repository, sandbox.path(), &config.ignore, forced_strategy)?;
-    // strip_remotes is best-effort: non-git sandboxes are fine
-    let _ = strip_remotes(sandbox.path());
     let uid = crate::utils::platform::current_uid();
     let gid = crate::utils::platform::current_gid();
     let current_user = format!("{uid}:{gid}");
@@ -401,41 +398,6 @@ fn live_tier_env() -> [(&'static str, String); 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{git, git_ok, strip_remotes};
-
-    #[test]
-    fn strip_remotes_removes_all_remotes() {
-        let repo = TempDir::create("pithos-test-remotes").unwrap();
-        git_ok(repo.path(), &["init"]).unwrap();
-        git_ok(
-            repo.path(),
-            &["remote", "add", "origin", "https://example.com/repo.git"],
-        )
-        .unwrap();
-        git_ok(
-            repo.path(),
-            &[
-                "remote",
-                "add",
-                "upstream",
-                "https://example.com/upstream.git",
-            ],
-        )
-        .unwrap();
-
-        strip_remotes(repo.path()).unwrap();
-
-        let output = git(repo.path(), &["remote"]).unwrap();
-        assert!(String::from_utf8_lossy(&output.stdout).trim().is_empty());
-    }
-
-    #[test]
-    fn strip_remotes_noop_without_remotes() {
-        let repo = TempDir::create("pithos-test-no-remotes").unwrap();
-        git_ok(repo.path(), &["init"]).unwrap();
-
-        strip_remotes(repo.path()).unwrap();
-    }
 
     #[test]
     fn live_tier_env_redirects_writable_state_only() {
