@@ -12,6 +12,7 @@ use crate::workspace::{CopyStrategy, parse_override, populate_sandbox, try_remov
 pub(crate) fn run(
     config_path: Option<&Path>,
     toolchain: Option<String>,
+    harness: Option<String>,
     auto_yes: bool,
     auto_no: bool,
 ) -> Result<()> {
@@ -24,7 +25,7 @@ pub(crate) fn run(
     }
     let config = {
         let _span = tracing::debug_span!("configuration load").entered();
-        Config::load(config_path, toolchain)?
+        Config::load(config_path, toolchain, harness)?
     };
     let forced_strategy = parse_override(config.copy_strategy.as_deref())?;
     {

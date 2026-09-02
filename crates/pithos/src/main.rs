@@ -25,6 +25,8 @@ struct Cli {
     config: Option<PathBuf>,
     #[arg(short = 't', long)]
     toolchain: Option<String>,
+    #[arg(long)]
+    harness: Option<String>,
     #[arg(long, global = true)]
     yes: bool,
     #[arg(long, global = true)]
@@ -39,10 +41,14 @@ enum Commands {
     Build {
         #[arg(short = 't', long)]
         toolchain: Option<String>,
+        #[arg(long)]
+        harness: Option<String>,
     },
     Run {
         #[arg(short = 't', long)]
         toolchain: Option<String>,
+        #[arg(long)]
+        harness: Option<String>,
     },
     Ps,
     Shell {
@@ -89,13 +95,22 @@ fn execute() -> Result<()> {
     }
     match cli.command {
         Some(Commands::Init) => handlers::init(),
-        Some(Commands::Build { toolchain }) => {
-            handlers::build(cli.config.as_deref(), toolchain.or(cli.toolchain))
-        }
-        None => handlers::run(cli.config.as_deref(), cli.toolchain, cli.yes, cli.no),
-        Some(Commands::Run { toolchain }) => handlers::run(
+        Some(Commands::Build { toolchain, harness }) => handlers::build(
             cli.config.as_deref(),
             toolchain.or(cli.toolchain),
+            harness.or(cli.harness),
+        ),
+        None => handlers::run(
+            cli.config.as_deref(),
+            cli.toolchain,
+            cli.harness,
+            cli.yes,
+            cli.no,
+        ),
+        Some(Commands::Run { toolchain, harness }) => handlers::run(
+            cli.config.as_deref(),
+            toolchain.or(cli.toolchain),
+            harness.or(cli.harness),
             cli.yes,
             cli.no,
         ),
@@ -158,9 +173,61 @@ mod tests {
     #[test]
     fn subcommand_toolchain_overrides_top_level_selection() {
         let cli = Cli::try_parse_from(["pithos", "-t", "old", "run", "-t", "new"]).unwrap();
-        let Commands::Run { toolchain } = cli.command.expect("run subcommand") else {
+        let Commands::Run {
+            toolchain,
+            harness: _,
+        } = cli.command.expect("run subcommand")
+        else {
             panic!("expected the run subcommand");
         };
         assert_eq!(toolchain.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn harness_flag_is_scoped_to_build_and_run() {
+        assert!(Cli::try_parse_from(["pithos", "--harness", "opencode"]).is_ok());
+        assert!(Cli::try_parse_from(["pithos", "run", "--harness", "opencode"]).is_ok());
+        assert!(Cli::try_parse_from(["pithos", "build", "--harness", "codex"]).is_ok());
+        assert!(Cli::try_parse_from(["pithos", "init", "--harness", "opencode"]).is_err());
+        assert!(Cli::try_parse_from(["pithos", "ps", "--harness", "opencode"]).is_err());
+        assert!(Cli::try_parse_from(["pithos", "pull", "--harness", "opencode"]).is_err());
+        assert!(Cli::try_parse_from(["pithos", "shell", "--harness", "opencode"]).is_err());
+        assert!(Cli::try_parse_from(["pithos", "exec", "--harness", "opencode"]).is_err());
+        assert!(Cli::try_parse_from(["pithos", "path", "--harness", "opencode"]).is_err());
+    }
+
+    #[test]
+    fn subcommand_harness_overrides_top_level_selection() {
+        let cli =
+            Cli::try_parse_from(["pithos", "--harness", "old", "run", "--harness", "new"]).unwrap();
+        let Commands::Run {
+            harness,
+            toolchain: _,
+        } = cli.command.expect("run subcommand")
+        else {
+            panic!("expected the run subcommand");
+        };
+        assert_eq!(harness.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn implicit_run_harness_is_parsed() {
+        let cli = Cli::try_parse_from(["pithos", "--harness", "codex"]).unwrap();
+        assert_eq!(cli.harness.as_deref(), Some("codex"));
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn build_harness_overrides_top_level() {
+        let cli = Cli::try_parse_from(["pithos", "--harness", "old", "build", "--harness", "new"])
+            .unwrap();
+        let Commands::Build {
+            harness,
+            toolchain: _,
+        } = cli.command.expect("build subcommand")
+        else {
+            panic!("expected the build subcommand");
+        };
+        assert_eq!(harness.as_deref(), Some("new"));
     }
 }

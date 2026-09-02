@@ -11,6 +11,8 @@ pub struct HarnessToml {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
+    pub command: Vec<String>,
+    #[serde(default)]
     pub install: String,
     #[serde(default)]
     pub depends_on: Vec<HarnessDependency>,
@@ -60,6 +62,7 @@ pub struct AllowlistToml {
 #[derive(Debug, Clone)]
 pub struct HarnessDef {
     pub name: String,
+    pub command: Vec<String>,
     pub install: String,
     pub depends_on: Vec<HarnessDependency>,
     pub mounts: Vec<MountDef>,
@@ -95,6 +98,7 @@ impl From<HarnessToml> for HarnessDef {
     fn from(value: HarnessToml) -> Self {
         Self {
             name: value.name,
+            command: value.command,
             install: value.install.trim().to_string(),
             depends_on: value.depends_on,
             mounts: value.mounts.into_iter().map(Into::into).collect(),

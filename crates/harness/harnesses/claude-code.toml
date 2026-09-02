@@ -1,5 +1,6 @@
 schema_version = 1
 name = "claude-code"
+command = ["claude"]
 install = "npm install --global @anthropic-ai/claude-code"
 depends_on = ["npm"]
 

@@ -1,5 +1,6 @@
 schema_version = 1
 name = "opencode"
+command = ["opencode"]
 install = "npm install --global opencode-ai"
 depends_on = ["npm"]
 

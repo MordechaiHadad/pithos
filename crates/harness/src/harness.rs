@@ -46,6 +46,35 @@ impl Harness {
         &self.name
     }
 
+    pub fn credentials_enabled(&self) -> bool {
+        self.credentials
+    }
+
+    pub fn allowlist_value(&self) -> Option<&Allowlist> {
+        self.allowlist.as_ref()
+    }
+
+    pub fn apply_harness_override(&mut self, harness_name: String) -> Result<()> {
+        let definition = registry::find(&harness_name).ok_or_else(|| {
+            eyre::eyre!(
+                "unknown harness \"{}\"; available: {}",
+                harness_name,
+                registry::available_names().join(", ")
+            )
+        })?;
+        if definition.command.is_empty() {
+            bail!(
+                "harness \"{}\" has no default command; add `command` to its definition",
+                harness_name
+            );
+        }
+        self.name = harness_name;
+        self.command = definition.command.clone();
+        self.credentials = false;
+        self.allowlist = None;
+        Ok(())
+    }
+
     pub fn mount(
         &self,
         command: &mut Command,

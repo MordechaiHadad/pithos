@@ -221,12 +221,17 @@ impl Config {
         Ok(())
     }
 
-    pub(crate) fn load(explicit: Option<&Path>, toolchain: Option<String>) -> Result<Self> {
+    pub(crate) fn load(
+        explicit: Option<&Path>,
+        toolchain: Option<String>,
+        harness: Option<String>,
+    ) -> Result<Self> {
         let path = resolve_config(explicit)?;
         let text = fs::read_to_string(&path).wrap_err("cannot read config")?;
         reject_removed_image_settings(&text)?;
         let mut config: Config = toml::from_str(&text).wrap_err("invalid TOML configuration")?;
         config.global_toolchains = load_global_toolchains()?;
+        config.with_harness(harness)?;
         config.with_toolchain(toolchain);
         config.validate()?;
         Ok(config)
@@ -250,6 +255,18 @@ impl Config {
                 self.harness.name()
             ));
         }
+    }
+
+    pub(crate) fn with_harness(&mut self, harness: Option<String>) -> Result<()> {
+        if let Some(name) = harness {
+            let trimmed = name.trim().to_owned();
+            if trimmed.is_empty() {
+                bail!("harness name cannot be empty");
+            }
+            self.harness.apply_harness_override(trimmed)?;
+            self.image_tag = None;
+        }
+        Ok(())
     }
 
     pub(crate) fn merged_toolchains(&self) -> BTreeMap<String, ToolchainDef> {
@@ -1094,5 +1111,149 @@ mod tests {
                 "api.anthropic.com",
             ]
         );
+    }
+
+    #[test]
+    fn with_harness_overrides_name_command_and_clears_credentials_and_allowlist() {
+        let mut config = Config::parse(
+            r#"
+            [harness]
+            name = "opencode"
+            command = ["opencode", "/workspace"]
+            credentials = true
+
+            [harness.allowlist.bash]
+            "*" = "allow"
+            "#,
+        );
+        assert!(config.harness.credentials_enabled());
+        assert!(config.harness.allowlist_value().is_some());
+        config.with_harness(Some("codex".into())).unwrap();
+        assert_eq!(config.harness.name(), "codex");
+        assert_eq!(config.harness.command(), ["codex"].as_slice());
+        assert!(!config.harness.credentials_enabled());
+        assert!(config.harness.allowlist_value().is_none());
+        assert_eq!(config.image_tag(), "localhost/pithos-codex:latest");
+    }
+
+    #[test]
+    fn with_harness_retags_with_toolchain() {
+        let mut config = Config::parse(
+            r#"
+            [harness]
+            name = "opencode"
+            command = ["opencode", "/workspace"]
+            "#,
+        );
+        config.with_harness(Some("codex".into())).unwrap();
+        config.with_toolchain(Some("rust".into()));
+        assert_eq!(config.image_tag(), "localhost/pithos-codex-rust:latest");
+    }
+
+    #[test]
+    fn with_harness_toolchain_and_harness_combined_via_load() {
+        let mut config = Config::parse(
+            r#"
+            [harness]
+            name = "opencode"
+            command = ["opencode", "/workspace"]
+            "#,
+        );
+        config.with_harness(Some("claude-code".into())).unwrap();
+        assert_eq!(config.harness.command(), ["claude"].as_slice());
+        assert_eq!(config.image_tag(), "localhost/pithos-claude-code:latest");
+        config.with_toolchain(Some("python".into()));
+        assert_eq!(
+            config.image_tag(),
+            "localhost/pithos-claude-code-python:latest"
+        );
+    }
+
+    #[test]
+    fn with_harness_unknown_name_fails() {
+        let mut config = Config::parse(
+            r#"
+            [harness]
+            name = "opencode"
+            command = ["opencode", "/workspace"]
+            "#,
+        );
+        let err = config.with_harness(Some("nosuch".into())).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown harness"), "{msg}");
+        assert!(msg.contains("opencode"), "{msg}");
+    }
+
+    #[test]
+    fn with_harness_empty_name_fails() {
+        let mut config = Config::parse(
+            r#"
+            [harness]
+            name = "opencode"
+            command = ["opencode", "/workspace"]
+            "#,
+        );
+        assert!(config.with_harness(Some("   ".into())).is_err());
+    }
+
+    #[test]
+    fn with_harness_none_keeps_original() {
+        let mut config = Config::parse(
+            r#"
+            [harness]
+            name = "opencode"
+            command = ["opencode", "/workspace"]
+            credentials = true
+            "#,
+        );
+        config.with_harness(None).unwrap();
+        assert_eq!(config.harness.name(), "opencode");
+        assert!(config.harness.credentials_enabled());
+    }
+
+    #[test]
+    fn with_harness_clears_incompatible_allowlist_for_claude() {
+        let mut config = Config::parse(
+            r#"
+            [harness]
+            name = "opencode"
+            command = ["opencode", "/workspace"]
+            credentials = true
+
+            [harness.allowlist.bash]
+            "*" = "allow"
+            "#,
+        );
+        config.with_harness(Some("claude-code".into())).unwrap();
+        assert_eq!(config.harness.name(), "claude-code");
+        assert_eq!(config.harness.command(), ["claude"].as_slice());
+        assert!(config.harness.allowlist_value().is_none());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn load_with_harness_override_via_file() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pithos.toml");
+        let mut file = std::fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            r#"
+            [harness]
+            name = "opencode"
+            command = ["opencode", "/workspace"]
+            credentials = true
+
+            [toolchain.rust]
+            mise = ["rust"]
+            "#
+        )
+        .unwrap();
+        let config = Config::load(Some(&path), Some("rust".into()), Some("codex".into())).unwrap();
+        assert_eq!(config.harness.name(), "codex");
+        assert_eq!(config.harness.command(), ["codex"].as_slice());
+        assert!(!config.harness.credentials_enabled());
+        assert_eq!(config.image_tag(), "localhost/pithos-codex-rust:latest");
     }
 }

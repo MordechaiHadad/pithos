@@ -40,3 +40,32 @@ fn available_names_lists_all_embedded() {
     assert!(names.len() >= 2);
     assert!(names.windows(2).all(|w| w[0] <= w[1]));
 }
+
+#[test]
+fn codex_mounts_parent_tmpfs_before_pinned_children() {
+    let def = registry::find("codex").expect("embedded codex definition parses");
+    let first = def.mounts.first().expect("codex has mounts");
+    assert_eq!(first.target, "/home/agent/.codex");
+    assert_eq!(first.mount_type, pithos_harness::MountType::Ephemeral);
+    let state_targets: Vec<_> = def
+        .mounts
+        .iter()
+        .filter(|m| m.mount_type == pithos_harness::MountType::State)
+        .map(|m| m.target.as_str())
+        .collect();
+    assert_eq!(
+        state_targets,
+        [
+            "/home/agent/.codex/history.jsonl",
+            "/home/agent/.codex/sessions",
+            "/home/agent/.codex/state_5.sqlite",
+            "/home/agent/.codex/state_5.sqlite-wal",
+            "/home/agent/.codex/state_5.sqlite-shm",
+            "/home/agent/.codex/models_cache.json",
+        ]
+    );
+    assert!(
+        def.mounts.iter().all(|m| !m.target.contains("logs_")),
+        "no log DB mounts"
+    );
+}
