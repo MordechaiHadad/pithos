@@ -217,7 +217,7 @@ impl Config {
         let contents = starter_config();
         std::io::Write::write_all(&mut file, contents.as_bytes())
             .wrap_err("cannot write pithos.toml")?;
-        println!("created {}", path.display());
+        tracing::info!(path = %path.display(), "created pithos.toml");
         Ok(())
     }
 

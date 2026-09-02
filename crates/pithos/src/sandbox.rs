@@ -271,7 +271,7 @@ pub(crate) fn copy_entry(
         };
         Ok(Some(CopiedEntry::File { bytes, reflinked }))
     } else {
-        eprintln!("warning: skipping special file {}", source.display());
+        tracing::warn!(path = %source.display(), "skipping special file");
         Ok(None)
     }
 }

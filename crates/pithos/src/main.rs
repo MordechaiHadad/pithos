@@ -74,7 +74,7 @@ fn main() -> ExitCode {
     match execute() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("error: {error:?}");
+            tracing::error!(error = ?error, "execution failed");
             ExitCode::FAILURE
         }
     }

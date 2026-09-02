@@ -72,14 +72,14 @@ pub(crate) fn summarize(changed: &[PathBuf], source: &Path, sandbox: &Path) {
     if !breakdown.is_empty() {
         line.push_str(&format!(" ({})", breakdown.join(", ")));
     }
-    println!("{line}");
+    tracing::info!("{line}");
     for relative in changed.iter().take(20) {
         let kind = change_kind(source, sandbox, relative);
         let styled = style_for_kind(kind).apply_to(format!("  {}", relative.display()));
-        println!("{styled}");
+        tracing::info!("{styled}");
     }
     if changed.len() > 20 {
-        println!("  ... and {} more", changed.len() - 20);
+        tracing::info!("  ... and {} more", changed.len() - 20);
     }
 }
 
@@ -167,7 +167,7 @@ fn run_viewer(viewer: &str, repo: &Path) -> Result<()> {
     let status =
         crate::utils::platform::run_shell(&command).wrap_err("could not run diff_viewer")?;
     if !status.success() {
-        eprintln!("diff_viewer exited with {status}");
+        tracing::warn!(%status, "diff_viewer exited with non-zero status");
     }
     Ok(())
 }

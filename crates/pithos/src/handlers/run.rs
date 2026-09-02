@@ -67,16 +67,11 @@ fn run_session(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| sandbox.path().display().to_string());
-    eprintln!(
-        "\n{} Pithos ready in {:.2}s\n\n{}   {}\n{} {}\n\n{}: pithos shell {}",
-        console::style("✓").green().bold(),
-        started.elapsed().as_secs_f64(),
-        console::style("Session").dim(),
-        console::style(&record.identity.id).cyan().bold(),
-        console::style("Workspace").dim(),
-        console::style(workspace_name).cyan(),
-        console::style("Tip").yellow().bold(),
-        console::style(&record.identity.id).cyan()
+    tracing::info!(
+        session = %record.identity.id,
+        workspace = %workspace_name,
+        elapsed_secs = started.elapsed().as_secs_f64(),
+        "Pithos ready"
     );
     let mut command = Command::new("podman");
     command.arg("run");

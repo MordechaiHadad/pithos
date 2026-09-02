@@ -30,9 +30,8 @@ fn passthrough_in(runtime_dir: Option<&Path>) -> Option<Passthrough> {
     let host_socket = match runtime_dir.map(|dir| dir.join("pulse/native")) {
         Some(socket) if socket.exists() => socket,
         _ => {
-            eprintln!(
-                "warning: audio = true but no PulseAudio socket was found under \
-                 $XDG_RUNTIME_DIR; running without sound"
+            tracing::warn!(
+                "audio = true but no PulseAudio socket was found under $XDG_RUNTIME_DIR; running without sound"
             );
             return None;
         }
@@ -51,7 +50,7 @@ fn passthrough_in(runtime_dir: Option<&Path>) -> Option<Passthrough> {
 
 #[cfg(not(target_os = "linux"))]
 fn passthrough_in(_runtime_dir: Option<&Path>) -> Option<Passthrough> {
-    eprintln!("warning: audio = true requires a Linux host; running without sound");
+    tracing::warn!("audio = true requires a Linux host; running without sound");
     None
 }
 

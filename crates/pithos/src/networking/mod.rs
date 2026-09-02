@@ -282,7 +282,7 @@ pub(crate) fn resolve_hosts(
                 }
             }
             Ok((host, Err(_))) => {
-                eprintln!("warning: cannot resolve whitelist host {host}, skipping");
+                tracing::warn!(host, "cannot resolve whitelist host, skipping");
                 if let Some(p) = progress.as_mut() {
                     p.inc();
                 }

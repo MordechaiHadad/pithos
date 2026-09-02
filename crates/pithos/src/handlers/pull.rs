@@ -252,13 +252,13 @@ fn emit_pull_report(
         return Ok(());
     }
     if applied {
-        println!("pulled {} files into {}", changed.len(), target.display());
+        tracing::info!(count = changed.len(), target = %target.display(), "pulled files");
     } else if changed.is_empty() {
-        println!("no changes to pull");
+        tracing::info!("no changes to pull");
     } else if options.dry_run {
-        println!("dry run: nothing applied");
+        tracing::info!("dry run: nothing applied");
     } else {
-        println!("no changes applied");
+        tracing::info!("no changes applied");
     }
     Ok(())
 }
