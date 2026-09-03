@@ -80,5 +80,10 @@ type = "ephemeral"
 access = "tmpfs"
 host_base = "home"
 
+# Sandbox permissions override: when pithos.toml sets
+# `sandbox_config = "config:..."`, the referenced harness-native
+# config.toml is mounted here verbatim. Without it, the host
+# ~/.codex directory travels into the sandbox unchanged.
 [allowlist]
-translation = "none"
+target = "/home/agent/.codex/config.toml"
+format = "toml"

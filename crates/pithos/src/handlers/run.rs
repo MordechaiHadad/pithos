@@ -68,11 +68,16 @@ fn run_session(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| sandbox.path().display().to_string());
-    tracing::info!(
-        session = %record.identity.id,
-        workspace = %workspace_name,
-        elapsed_secs = started.elapsed().as_secs_f64(),
-        "Pithos ready"
+    eprintln!(
+        "\n{} Pithos ready in {:.2}s\n\n{}   {}\n{} {}\n\n{}: pithos shell {}",
+        console::style("✓").green().bold(),
+        started.elapsed().as_secs_f64(),
+        console::style("Session").dim(),
+        console::style(&record.identity.id).cyan().bold(),
+        console::style("Workspace").dim(),
+        console::style(workspace_name).cyan(),
+        console::style("Tip").yellow().bold(),
+        console::style(&record.identity.id).cyan()
     );
     let mut command = Command::new("podman");
     command.arg("run");
@@ -132,9 +137,6 @@ fn run_session(
     if !config.environment.contains_key("PATH") {
         command.args(["--env-merge", "PATH=/home/agent/.local/share/mise/shims:/home/agent/.cargo/bin:/home/agent/.local/bin:${PATH}"]);
     }
-    for (key, value) in config.harness.environment() {
-        command.args(["--env", &format!("{key}={value}")]);
-    }
     for (key, value) in crate::utils::environment::terminal_env() {
         if !config.environment.contains_key(&key) {
             command.args(["--env", &format!("{key}={value}")]);
@@ -144,6 +146,7 @@ fn run_session(
         &mut command,
         &record.identity.id,
         &crate::registry::runtime_dir(),
+        &config.config_dir,
     )?;
     config.networking.apply_to_resolved(
         &mut command,

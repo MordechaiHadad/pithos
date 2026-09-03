@@ -115,6 +115,11 @@ type = "ephemeral"
 access = "tmpfs"
 host_base = "home"
 
+# Sandbox permissions override: when pithos.toml sets
+# `sandbox_config = "config:..."`, the referenced harness-native
+# opencode.json is mounted here, replacing the host config file below.
+# The file uses opencode's own `permission` syntax verbatim; pithos
+# never parses its contents beyond a JSON validity check.
 [allowlist]
-translation = "passthrough_env"
-env_var = "OPENCODE_CONFIG_CONTENT"
+target = "/home/agent/.config/opencode/opencode.json"
+format = "json"

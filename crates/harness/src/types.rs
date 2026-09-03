@@ -39,13 +39,13 @@ pub enum Access {
     Tmpfs,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum Translation {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AllowlistFormat {
     #[default]
-    None,
-    PassthroughEnv,
-    ClaudeSettings,
+    Json,
+    Toml,
+    Raw,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

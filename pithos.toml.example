@@ -29,15 +29,12 @@ credentials = true
 [environment]
 OPENCODE_ENABLE_EXA = "1"
 
-# [harness.allowlist]
-# edit = "allow"
-
-[harness.allowlist.bash]
-"*" = "allow"
-"curl -T *" = "deny"
-"curl --upload-file *" = "deny"
-"wget --post-file *" = "deny"
-"wget --post-data *" = "deny"
+# Sandbox permissions override. The host harness config stays constrained;
+# point at a harness-native file to give the sandbox different permissions.
+# The path needs a prefix: "config:" resolves next to this pithos.toml
+# (keep it gitignored), "cwd:" against the shell directory, plus "~/" and
+# absolute paths. Bare relative paths are rejected as ambiguous.
+# sandbox_config = "config:sandbox.opencode.json"
 
 # [networking]
 # Restrict egress from the agent container. Loaded into the container's

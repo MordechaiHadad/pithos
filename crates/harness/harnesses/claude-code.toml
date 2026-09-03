@@ -61,7 +61,9 @@ type = "ephemeral"
 access = "tmpfs"
 host_base = "home"
 
-# Generated: per-session settings.json from allowlist translation
+# Generated: per-session settings.json from the sandbox allowlist override.
+# Without `sandbox_config` in pithos.toml this mount is skipped and the
+# host config mounts below travel into the sandbox unchanged.
 [[mount]]
 host = "claude-settings.json"
 target = "/home/agent/.claude/settings.json"
@@ -133,5 +135,10 @@ type = "config"
 access = "ro"
 host_base = "home"
 
+# Sandbox permissions override: when pithos.toml sets
+# `sandbox_config = "config:..."`, the referenced harness-native
+# settings.json is mounted here verbatim, replacing the host file.
+# Carry over sibling keys like `model` and `hooks` explicitly.
 [allowlist]
-translation = "claude_settings"
+target = "/home/agent/.claude/settings.json"
+format = "json"

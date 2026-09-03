@@ -4,9 +4,7 @@ use std::process::Command;
 
 use eyre::{WrapErr, eyre};
 
-use crate::agent::AGENT_HOME;
 use crate::def::{CredentialDef, HarnessDef, MountDef};
-use crate::harness::Allowlist;
 use crate::platform;
 use crate::types::{Access, HostBase, MountType, OnMissing, Platform};
 
@@ -41,10 +39,10 @@ fn host_candidates(
             if let Some(base) = dirs::data_dir() {
                 candidates.push(base.join(app).join(&def.host));
             }
-            if let Some(fallback) = windows_data_fallback(app, &def.host) {
-                if !candidates.contains(&fallback) {
-                    candidates.push(fallback);
-                }
+            if let Some(fallback) = windows_data_fallback(app, &def.host)
+                && !candidates.contains(&fallback)
+            {
+                candidates.push(fallback);
             }
             if candidates.is_empty() {
                 eyre::bail!("cannot determine data directory");
@@ -56,10 +54,10 @@ fn host_candidates(
             if let Some(base) = dirs::state_dir() {
                 candidates.push(base.join(app).join(&def.host));
             }
-            if let Some(fallback) = windows_state_fallback(app, &def.host) {
-                if !candidates.contains(&fallback) {
-                    candidates.push(fallback);
-                }
+            if let Some(fallback) = windows_state_fallback(app, &def.host)
+                && !candidates.contains(&fallback)
+            {
+                candidates.push(fallback);
             }
             if candidates.is_empty() {
                 eyre::bail!("cannot determine state directory");
@@ -71,10 +69,10 @@ fn host_candidates(
             if let Some(base) = dirs::cache_dir() {
                 candidates.push(base.join(app).join(&def.host));
             }
-            if let Some(fallback) = windows_cache_fallback(app, &def.host) {
-                if !candidates.contains(&fallback) {
-                    candidates.push(fallback);
-                }
+            if let Some(fallback) = windows_cache_fallback(app, &def.host)
+                && !candidates.contains(&fallback)
+            {
+                candidates.push(fallback);
             }
             if candidates.is_empty() {
                 eyre::bail!("cannot determine cache directory");
@@ -91,7 +89,7 @@ fn pick_existing(candidates: Vec<PathBuf>) -> PathBuf {
             return candidate.clone();
         }
     }
-    candidates.into_iter().next().unwrap_or_else(PathBuf::new)
+    candidates.into_iter().next().unwrap_or_default()
 }
 
 fn windows_data_fallback(app: &str, host: &str) -> Option<PathBuf> {
@@ -114,10 +112,20 @@ pub fn apply_mounts(
     command: &mut Command,
     session_id: &str,
     runtime_base: &Path,
-    allowlist: Option<&Allowlist>,
+    allowlist_override: Option<&Path>,
     credentials_enabled: bool,
 ) -> eyre::Result<()> {
     apply_credentials(def, command, session_id, runtime_base, credentials_enabled)?;
+
+    if let Some(override_file) = allowlist_override {
+        let Some(path) = write_allowlist_sink(def, override_file, session_id, runtime_base)? else {
+            eyre::bail!(
+                "harness \"{}\" does not declare an [allowlist] sink; remove harness.sandbox_config",
+                def.name
+            );
+        };
+        mount_path(command, &path, &def.allowlist.target, true)?;
+    }
 
     for mount in &def.mounts {
         match mount.mount_type {
@@ -132,17 +140,15 @@ pub fn apply_mounts(
                 command.args(["--tmpfs", &tmpfs_spec(&mount.target)]);
             }
             MountType::Generated => {
-                if def.name == "claude-code"
-                    && mount.target == format!("{AGENT_HOME}/.claude/settings.json")
-                {
-                    if let Some(settings) =
-                        write_claude_settings(allowlist, session_id, runtime_base)?
-                    {
-                        mount_path(command, &settings, &mount.target, true)?;
-                    }
+                if def.allowlist.has_sink() && mount.target == def.allowlist.target {
                     continue;
                 }
-                tracing::warn!(target = %mount.target, "generated mount not handled for harness {}", def.name);
+                eyre::bail!(
+                    "harness \"{}\" declares a generated mount at {} without a matching [allowlist] target; \
+                     point the sink at the mount target or remove the mount",
+                    def.name,
+                    mount.target
+                );
             }
             _ => {
                 let host = resolve_host_path(mount, runtime_base, session_id)?;
@@ -153,9 +159,8 @@ pub fn apply_mounts(
                     continue;
                 }
                 if mount.mount_type == MountType::Config
-                    && def.name == "opencode"
-                    && !mount.host.ends_with("plugins")
-                    && !(credentials_enabled || allowlist.is_some())
+                    && allowlist_override.is_some()
+                    && is_ancestor_of(&mount.target, &def.allowlist.target)
                 {
                     continue;
                 }
@@ -186,11 +191,6 @@ pub fn apply_mounts(
     }
 
     Ok(())
-}
-
-fn home_path(relative: &str) -> eyre::Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| eyre!("cannot determine home directory"))?;
-    Ok(home.join(relative))
 }
 
 fn ensure_pinned_file(path: &Path) -> eyre::Result<()> {
@@ -225,32 +225,32 @@ fn mount_path(
     Ok(())
 }
 
-fn write_claude_settings(
-    allowlist: Option<&Allowlist>,
+fn is_ancestor_of(parent: &str, child: &str) -> bool {
+    if parent.is_empty() || child.is_empty() {
+        return false;
+    }
+    let parent = parent.trim_end_matches('/');
+    child.len() > parent.len()
+        && child.starts_with(parent)
+        && child.as_bytes()[parent.len()] == b'/'
+}
+
+fn write_allowlist_sink(
+    def: &HarnessDef,
+    override_file: &Path,
     session_id: &str,
     runtime_base: &Path,
 ) -> eyre::Result<Option<PathBuf>> {
-    let Some(allowlist) = allowlist else {
+    let sink = &def.allowlist;
+    if !sink.has_sink() {
         return Ok(None);
-    };
-    let user_settings_path = home_path(".claude")?.join("settings.json");
-    let user_settings = match fs::read_to_string(&user_settings_path) {
-        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(value) => value,
-            Err(error) => {
-                tracing::warn!(%error, path = %user_settings_path.display(), "ignoring unparseable user settings.json");
-                serde_json::json!({})
-            }
-        },
-        Err(_) => serde_json::json!({}),
-    };
-    let merged = crate::translate::claude_settings_translation(allowlist, user_settings);
+    }
+    let contents = fs::read(override_file)
+        .wrap_err_with(|| format!("cannot read {}", override_file.display()))?;
     let directory = runtime_base.join(session_id);
     fs::create_dir_all(&directory)
         .wrap_err_with(|| format!("cannot create {}", directory.display()))?;
-    let path = directory.join("claude-settings.json");
-    let contents =
-        serde_json::to_vec_pretty(&merged).wrap_err("cannot serialize claude settings")?;
+    let path = directory.join(sanitize_target(&sink.target));
     fs::write(&path, contents).wrap_err_with(|| format!("cannot write {}", path.display()))?;
     Ok(Some(path))
 }
@@ -312,10 +312,10 @@ fn credential_candidates(
             if let Some(base) = dirs::data_dir() {
                 candidates.push(base.join(app).join(trimmed));
             }
-            if let Some(fallback) = windows_data_fallback(app, trimmed) {
-                if !candidates.contains(&fallback) {
-                    candidates.push(fallback);
-                }
+            if let Some(fallback) = windows_data_fallback(app, trimmed)
+                && !candidates.contains(&fallback)
+            {
+                candidates.push(fallback);
             }
             if candidates.is_empty() {
                 eyre::bail!("cannot determine data directory");
@@ -327,10 +327,10 @@ fn credential_candidates(
             if let Some(base) = dirs::state_dir() {
                 candidates.push(base.join(app).join(trimmed));
             }
-            if let Some(fallback) = windows_state_fallback(app, trimmed) {
-                if !candidates.contains(&fallback) {
-                    candidates.push(fallback);
-                }
+            if let Some(fallback) = windows_state_fallback(app, trimmed)
+                && !candidates.contains(&fallback)
+            {
+                candidates.push(fallback);
             }
             if candidates.is_empty() {
                 eyre::bail!("cannot determine state directory");
@@ -342,10 +342,10 @@ fn credential_candidates(
             if let Some(base) = dirs::cache_dir() {
                 candidates.push(base.join(app).join(trimmed));
             }
-            if let Some(fallback) = windows_cache_fallback(app, trimmed) {
-                if !candidates.contains(&fallback) {
-                    candidates.push(fallback);
-                }
+            if let Some(fallback) = windows_cache_fallback(app, trimmed)
+                && !candidates.contains(&fallback)
+            {
+                candidates.push(fallback);
             }
             if candidates.is_empty() {
                 eyre::bail!("cannot determine cache directory");

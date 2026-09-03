@@ -367,8 +367,9 @@ OpenCode state lives under the host's XDG directories. Sessions mount
 (`opencode.db`, `-wal`, `-shm`) and small state files (`kv.json`,
 `session.json`, `model.json`, `prompt-history.jsonl`) read-write to their
 host locations so history survives across sessions, mount
-`~/.config/opencode` read-only when credentials or an allowlist are set, and
-cover everything else with tmpfs.
+`~/.config/opencode` read-only when `credentials = true` (or mount a
+generated `opencode.json` there when `sandbox_config` is set), and cover
+everything else with tmpfs.
 
 #### Claude Code paths
 
@@ -408,33 +409,39 @@ CLAUDE_CODE_OAUTH_TOKEN = "..."
 Read-only credential mounts mean OAuth token rotation cannot be written
 back; re-run `/login` on the host if a session reports expired tokens.
 
-#### Allowlists
+#### Sandbox allowlist overrides
 
-`[harness.allowlist]` configures permissions. For OpenCode the object is
-passed through verbatim as `OPENCODE_CONFIG_CONTENT`. For Claude Code the
-supported keys are translated into a generated `settings.json` whose
-`permissions` key replaces the user's own (all other keys, such as `model`
-or `hooks`, are preserved):
-
-| pithos | Claude Code rule | verdict list |
-| --- | --- | --- |
-| `bash."git *" = "allow"` | `"Bash(git *)"` | `permissions.allow` |
-| `bash."*" = "ask"` | `"Bash(*)"` | `permissions.ask` |
-| `bash."curl -T *" = "deny"` | `"Bash(curl -T *)"` | `permissions.deny` |
-| `edit = "allow"` | `"Edit"`, `"Write"` | that verdict's list |
-
-Claude Code evaluates deny, then ask, then allow. Other allowlist keys are
-rejected for Claude Code at configuration time; verify the effective rules
-with `claude /permissions`.
+Pithos does not invent its own permission syntax: each harness speaks a
+different one (Opencode's `permission` object, Claude Code's
+`permissions` lists, Codex's `config.toml` profiles), so the sandbox
+override is a harness-native file. The host config stays constrained;
+when `[harness] sandbox_config` is set, its contents are mounted at the
+harness's config location inside the sandbox instead:
 
 ```toml
-[harness.allowlist]
-edit = "allow"
-
-[harness.allowlist.bash]
-"*" = "ask"
-"git *" = "allow"
+[harness]
+name = "claude-code"
+sandbox_config = "config:sandbox.claude.json"
 ```
+
+Paths need an explicit prefix: `config:` resolves next to the loaded
+`pithos.toml`, `cwd:` against the shell directory, plus `~/` and
+absolute paths. Bare relative paths are rejected because `./` is
+ambiguous. Keep sidecar files gitignored and out of the repo: pithos
+warns when the resolved file sits inside the git worktree, since these
+files routinely carry secrets.
+
+Delivery per harness (declared in its harness definition, no
+translation in pithos itself):
+
+| harness | override format | sandbox target |
+| --- | --- | --- |
+| Opencode | `opencode.json` with a `permission` key | `~/.config/opencode/opencode.json`, replacing the host config dir mount |
+| Claude Code | `settings.json` with a `permissions` key | `~/.claude/settings.json`, replacing the host file (carry sibling keys like `model` and `hooks` over explicitly) |
+| Codex | `config.toml` | `~/.codex/config.toml`, replacing any host file |
+
+Without `sandbox_config` the host files travel into the sandbox
+unchanged. Verify Claude Code rules with `claude /permissions`.
 
 ### Repository and environment settings
 

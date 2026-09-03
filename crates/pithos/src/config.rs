@@ -32,6 +32,10 @@ pub(crate) struct Config {
     #[serde(default)]
     pub(crate) mise: Vec<String>,
     pub(crate) harness: Harness,
+    /// Directory of the loaded pithos.toml. `config:`-prefixed
+    /// `harness.sandbox_config` paths resolve against it.
+    #[serde(skip, default = "default_config_dir")]
+    pub(crate) config_dir: PathBuf,
     #[serde(skip, default)]
     pub(crate) global_toolchains: BTreeMap<String, ToolchainDef>,
     #[serde(default)]
@@ -184,6 +188,34 @@ struct LegacyImageSettings {
     image_tag: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct LegacyAllowlist {
+    #[serde(default)]
+    harness: Option<LegacyHarnessAllowlist>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyHarnessAllowlist {
+    #[serde(default)]
+    allowlist: Option<toml::Value>,
+}
+
+fn reject_removed_allowlist(text: &str) -> Result<()> {
+    let legacy: LegacyAllowlist = toml::from_str(text).wrap_err("invalid TOML configuration")?;
+    if legacy
+        .harness
+        .is_some_and(|harness| harness.allowlist.is_some())
+    {
+        bail!(
+            "`harness.allowlist` inline permissions were removed; \
+             write the harness-native file instead and point \
+             `harness.sandbox_config` at it with \"config:<path>\", \
+             \"cwd:<path>\", \"~/...\" or an absolute path"
+        )
+    }
+    Ok(())
+}
+
 fn reject_removed_image_settings(text: &str) -> Result<()> {
     let legacy: LegacyImageSettings =
         toml::from_str(text).wrap_err("invalid TOML configuration")?;
@@ -204,6 +236,10 @@ fn reject_removed_image_settings(text: &str) -> Result<()> {
 
 fn default_workspace() -> String {
     "/workspace".into()
+}
+
+fn default_config_dir() -> PathBuf {
+    PathBuf::from(".")
 }
 
 impl Config {
@@ -229,7 +265,12 @@ impl Config {
         let path = resolve_config(explicit)?;
         let text = fs::read_to_string(&path).wrap_err("cannot read config")?;
         reject_removed_image_settings(&text)?;
+        reject_removed_allowlist(&text)?;
         let mut config: Config = toml::from_str(&text).wrap_err("invalid TOML configuration")?;
+        config.config_dir = path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
         config.global_toolchains = load_global_toolchains()?;
         config.with_harness(harness)?;
         config.with_toolchain(toolchain);
@@ -334,7 +375,7 @@ impl Config {
         if self.harness.command().is_empty() {
             bail!("harness.command cannot be empty")
         }
-        self.harness.validate()?;
+        self.harness.validate(&self.config_dir)?;
         if self.workspace.is_empty() || !self.workspace.starts_with('/') {
             bail!("workspace must be an absolute container path")
         }
@@ -428,10 +469,10 @@ fn config_dir_candidates() -> Vec<PathBuf> {
     if let Some(dir) = dirs::config_dir() {
         candidates.push(dir);
     }
-    if let Some(fallback) = windows_config_fallback() {
-        if !candidates.contains(&fallback) {
-            candidates.push(fallback);
-        }
+    if let Some(fallback) = windows_config_fallback()
+        && !candidates.contains(&fallback)
+    {
+        candidates.push(fallback);
     }
     candidates
 }
@@ -1121,18 +1162,16 @@ mod tests {
             name = "opencode"
             command = ["opencode", "/workspace"]
             credentials = true
-
-            [harness.allowlist.bash]
-            "*" = "allow"
+            sandbox_config = "config:sandbox.json"
             "#,
         );
         assert!(config.harness.credentials_enabled());
-        assert!(config.harness.allowlist_value().is_some());
+        assert!(config.harness.sandbox_config_raw().is_some());
         config.with_harness(Some("codex".into())).unwrap();
         assert_eq!(config.harness.name(), "codex");
         assert_eq!(config.harness.command(), ["codex"].as_slice());
         assert!(!config.harness.credentials_enabled());
-        assert!(config.harness.allowlist_value().is_none());
+        assert!(config.harness.sandbox_config_raw().is_none());
         assert_eq!(config.image_tag(), "localhost/pithos-codex:latest");
     }
 
@@ -1212,23 +1251,52 @@ mod tests {
     }
 
     #[test]
-    fn with_harness_clears_incompatible_allowlist_for_claude() {
+    fn with_harness_clears_sandbox_config() {
         let mut config = Config::parse(
             r#"
             [harness]
             name = "opencode"
             command = ["opencode", "/workspace"]
             credentials = true
-
-            [harness.allowlist.bash]
-            "*" = "allow"
+            sandbox_config = "config:sandbox.json"
             "#,
         );
         config.with_harness(Some("claude-code".into())).unwrap();
         assert_eq!(config.harness.name(), "claude-code");
         assert_eq!(config.harness.command(), ["claude"].as_slice());
-        assert!(config.harness.allowlist_value().is_none());
+        assert!(config.harness.sandbox_config_raw().is_none());
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn legacy_inline_allowlist_is_rejected_with_guidance() {
+        let error = reject_removed_allowlist(
+            r#"
+            [harness]
+            name = "opencode"
+            command = ["opencode", "/workspace"]
+
+            [harness.allowlist.bash]
+            "*" = "allow"
+            "#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("sandbox_config"), "{}", error);
+    }
+
+    #[test]
+    fn config_without_allowlist_passes_removed_check() {
+        assert!(
+            reject_removed_allowlist(
+                r#"
+            [harness]
+            name = "opencode"
+            command = ["opencode", "/workspace"]
+            sandbox_config = "config:sandbox.json"
+            "#,
+            )
+            .is_ok()
+        );
     }
 
     #[test]

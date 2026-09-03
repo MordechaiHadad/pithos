@@ -18,10 +18,10 @@ fn config_dir_candidates() -> Vec<PathBuf> {
     if let Some(dir) = dirs::config_dir() {
         candidates.push(dir);
     }
-    if let Some(fallback) = windows_config_fallback() {
-        if !candidates.contains(&fallback) {
-            candidates.push(fallback);
-        }
+    if let Some(fallback) = windows_config_fallback()
+        && !candidates.contains(&fallback)
+    {
+        candidates.push(fallback);
     }
     candidates
 }

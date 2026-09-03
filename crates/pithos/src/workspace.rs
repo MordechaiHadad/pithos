@@ -232,14 +232,32 @@ fn require_worktree_eligible(source: &Path) -> Result<()> {
     }
 }
 
-/// ReFS block cloning on Windows; `check_reflink_support` is precise there,
-/// `Unknown` (Linux/macOS) counts as not supported.
 fn reflink_supported() -> Result<bool> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
     let base = temporary_base()?;
-    Ok(matches!(
-        reflink_copy::check_reflink_support(&base, &base),
-        Ok(reflink_copy::ReflinkSupport::Supported)
-    ))
+    let sequence = PROBE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let probe_source = base.join(format!(
+        ".pithos-reflink-probe-{}-{sequence}.src",
+        std::process::id()
+    ));
+    let probe_dest = base.join(format!(
+        ".pithos-reflink-probe-{}-{sequence}.dst",
+        std::process::id()
+    ));
+    if fs::write(&probe_source, b"pithos").is_err() {
+        let _ = fs::remove_file(&probe_source);
+        return Ok(false);
+    }
+    let supported = matches!(
+        reflink_copy::reflink_or_copy(&probe_source, &probe_dest),
+        Ok(None)
+    );
+    let _ = fs::remove_file(&probe_source);
+    let _ = fs::remove_file(&probe_dest);
+    Ok(supported)
 }
 
 /// Whether the source repository can back a shared-object sandbox: it must

@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 use super::types::{
-    Access, HarnessDependency, HostBase, MountType, OnMissing, Platform, Translation,
+    Access, AllowlistFormat, HarnessDependency, HostBase, MountType, OnMissing, Platform,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -54,9 +54,9 @@ pub struct CredentialToml {
 #[serde(deny_unknown_fields)]
 pub struct AllowlistToml {
     #[serde(default)]
-    pub translation: Translation,
+    pub target: String,
     #[serde(default)]
-    pub env_var: Option<String>,
+    pub format: AllowlistFormat,
 }
 
 #[derive(Debug, Clone)]
@@ -90,8 +90,14 @@ pub struct CredentialDef {
 
 #[derive(Debug, Clone)]
 pub struct AllowlistDef {
-    pub translation: Translation,
-    pub env_var: Option<String>,
+    pub target: String,
+    pub format: AllowlistFormat,
+}
+
+impl AllowlistDef {
+    pub fn has_sink(&self) -> bool {
+        !self.target.is_empty()
+    }
 }
 
 impl From<HarnessToml> for HarnessDef {
@@ -135,8 +141,8 @@ impl From<CredentialToml> for CredentialDef {
 impl From<AllowlistToml> for AllowlistDef {
     fn from(value: AllowlistToml) -> Self {
         Self {
-            translation: value.translation,
-            env_var: value.env_var,
+            target: value.target,
+            format: value.format,
         }
     }
 }
