@@ -91,8 +91,28 @@ pub(crate) fn review(
     unmanaged: &[String],
     session_view: &mut Option<TempDir>,
 ) -> Result<bool> {
+    review_with_prompt(
+        changed,
+        source,
+        sandbox,
+        diff_viewer,
+        unmanaged,
+        session_view,
+        "Apply changes to the host repository? [y]es [v]iew diff [n]o: ",
+    )
+}
+
+pub(crate) fn review_with_prompt(
+    changed: &[PathBuf],
+    source: &Path,
+    sandbox: &Path,
+    diff_viewer: Option<&str>,
+    unmanaged: &[String],
+    session_view: &mut Option<TempDir>,
+    prompt: &str,
+) -> Result<bool> {
     loop {
-        print!("Apply changes to the host repository? [y]es [v]iew diff [n]o: ");
+        print!("{prompt}");
         io::stdout().flush()?;
         let mut answer = String::new();
         io::stdin().read_line(&mut answer)?;

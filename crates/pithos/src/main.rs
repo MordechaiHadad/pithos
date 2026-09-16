@@ -74,6 +74,18 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    Push {
+        session: Option<String>,
+        /// Push from this directory instead of the origin repository
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// Report changes without applying them
+        #[arg(long)]
+        dry_run: bool,
+        /// Print a machine-readable JSON report instead of text
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -133,6 +145,21 @@ fn execute() -> Result<()> {
                 json,
             },
         ),
+        Some(Commands::Push {
+            session,
+            path,
+            dry_run,
+            json,
+        }) => handlers::push(
+            session.as_deref(),
+            path.as_deref(),
+            handlers::PushOptions {
+                auto_yes: cli.yes,
+                auto_no: cli.no,
+                dry_run,
+                json,
+            },
+        ),
     }
 }
 
@@ -167,6 +194,7 @@ mod tests {
         assert!(Cli::try_parse_from(["pithos", "init", "-t", "rust"]).is_err());
         assert!(Cli::try_parse_from(["pithos", "ps", "-t", "rust"]).is_err());
         assert!(Cli::try_parse_from(["pithos", "pull", "-t", "rust"]).is_err());
+        assert!(Cli::try_parse_from(["pithos", "push", "-t", "rust"]).is_err());
         assert!(Cli::try_parse_from(["pithos", "shell", "-t", "rust"]).is_err());
     }
 
@@ -191,6 +219,7 @@ mod tests {
         assert!(Cli::try_parse_from(["pithos", "init", "--harness", "opencode"]).is_err());
         assert!(Cli::try_parse_from(["pithos", "ps", "--harness", "opencode"]).is_err());
         assert!(Cli::try_parse_from(["pithos", "pull", "--harness", "opencode"]).is_err());
+        assert!(Cli::try_parse_from(["pithos", "push", "--harness", "opencode"]).is_err());
         assert!(Cli::try_parse_from(["pithos", "shell", "--harness", "opencode"]).is_err());
         assert!(Cli::try_parse_from(["pithos", "exec", "--harness", "opencode"]).is_err());
         assert!(Cli::try_parse_from(["pithos", "path", "--harness", "opencode"]).is_err());

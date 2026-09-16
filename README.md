@@ -111,6 +111,8 @@ terminals. Pithos records each running session under
 - `pithos path [id]` prints the host path of the live workspace.
 - `pithos pull [id]` applies the live workspace back to the host repository
   without ending the session.
+- `pithos push [id]` applies the host repository into the live workspace
+  without ending the session.
 
 The id is optional while exactly one session is running.
 
@@ -143,6 +145,31 @@ each entry has a `path` and a `kind` of `added`, `modified`, or `deleted`.
 When stdin is not a terminal, `pull` refuses to prompt and requires an
 explicit `--yes`, `--no`, or `--dry-run`. The `--yes` and `--no` flags are
 global, so they work before or after the subcommand.
+
+### Pushing host changes while a session runs
+
+`pithos push` is the opposite of `pull`: it mirrors the host repository into
+the live workspace while the harness keeps running. Use it when the
+repository moved ahead after the session started (for example a teammate's
+patch landed, or you edited another checkout) and you want the agent to see
+the new state. It reports added, modified, and deleted files, shows a diff
+on request (`[v]iew`), and mirrors the repository into the workspace after
+confirmation. The host directory is never modified, and the sandbox `.git`
+link is preserved.
+
+```sh
+pithos push myrepo-1a2b --dry-run
+pithos push myrepo-1a2b --yes
+```
+
+By default the push reads from the repository the session started from.
+`--path` pushes from any existing directory instead; relative forms resolve
+against your shell's working directory. `--dry-run`, `--json`, and the
+non-TTY `--yes`/`--no` rules work exactly like `pull`. The JSON object
+contains `session`, `source`, `target` (the sandbox), `applied`, and
+`changed`. Pushing overwrites sandbox files that differ, including files
+the agent created but the repository no longer has, so review the file list
+before confirming.
 
 The container's workspace is a bind mount of a host directory, so any editor
 can open the path printed by `pithos path` and watch the agent's changes land
