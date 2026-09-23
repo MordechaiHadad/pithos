@@ -1,7 +1,7 @@
 schema_version = 1
 name = "opencode"
 command = ["opencode"]
-install = "npm install --global opencode-ai"
+install = "npm install -g @opencode/cli"
 depends_on = ["npm"]
 
 # Credentials: gated on credentials = true, read-only
