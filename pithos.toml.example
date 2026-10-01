@@ -2,6 +2,9 @@ workspace = "/workspace"
 audio = true
 
 ephemeral = ["target", ".serena"]
+# `*` can match file names/extensions; `?` is not a wildcard.
+# ignore = ["*.log"]
+# ephemeral = ["*.cache"]
 
 mise = ["deno"]
 toolchains = ["rust", "python"]

@@ -1,10 +1,12 @@
 use eyre::{Result, eyre};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 use tempfile::Builder;
 
@@ -402,7 +404,7 @@ fn is_excluded(relative: &Path, unmanaged: &[String]) -> bool {
 
 pub(crate) fn matches_any(relative: &Path, patterns: &[String]) -> bool {
     let components: Vec<_> = relative.components().map(|c| c.as_os_str()).collect();
-    patterns.iter().any(|pattern| {
+    let component_match = patterns.iter().any(|pattern| {
         let parts: Vec<_> = Path::new(pattern)
             .components()
             .map(|c| c.as_os_str())
@@ -410,7 +412,59 @@ pub(crate) fn matches_any(relative: &Path, patterns: &[String]) -> bool {
         components
             .windows(parts.len())
             .any(|window| window == parts.as_slice())
-    })
+    });
+    component_match || {
+        let Some(globs) = cached_globs(patterns) else {
+            return false;
+        };
+        let path = components
+            .iter()
+            .map(|component| component.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        globs.is_match(path)
+    }
+}
+
+static GLOB_CACHE: OnceLock<Mutex<HashMap<Vec<String>, Arc<GlobSet>>>> = OnceLock::new();
+
+/// Validates path patterns while allowing `*` as the only wildcard operator.
+pub(crate) fn validate_path_patterns(name: &str, patterns: &[String]) -> Result<()> {
+    compile_globs(patterns)
+        .map(|_| ())
+        .map_err(|error| eyre!("invalid {name} pattern: {error}"))
+}
+
+fn cached_globs(patterns: &[String]) -> Option<Arc<GlobSet>> {
+    if !patterns.iter().any(|pattern| pattern.contains('*')) {
+        return None;
+    }
+    let cache = GLOB_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    {
+        let cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(globs) = cache.get(patterns) {
+            return Some(Arc::clone(globs));
+        }
+    }
+    let globs = Arc::new(compile_globs(patterns).ok()?);
+    let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    Some(Arc::clone(cache.entry(patterns.to_vec()).or_insert(globs)))
+}
+
+fn compile_globs(patterns: &[String]) -> Result<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns.iter().filter(|pattern| pattern.contains('*')) {
+        let normalized = pattern.replace('\\', "/");
+        let mut glob = String::with_capacity(normalized.len());
+        for character in normalized.chars() {
+            if matches!(character, '?' | '[' | ']' | '{' | '}' | '!') {
+                glob.push('\\');
+            }
+            glob.push(character);
+        }
+        builder.add(Glob::new(&glob)?);
+    }
+    Ok(builder.build()?)
 }
 
 fn collect_paths(
@@ -956,6 +1010,20 @@ mod tests {
         assert!(matches_any(Path::new("sub/cache/data.bin"), &nested));
         assert!(matches_any(Path::new("deep/sub/cache/x"), &nested));
         assert!(!matches_any(Path::new("sub/caching/x"), &nested));
+    }
+
+    #[test]
+    fn matches_any_supports_star_globs_but_not_question_wildcards() {
+        let extensions = vec!["*.log".to_string()];
+        assert!(matches_any(Path::new("nested/deep/error.log"), &extensions));
+        assert!(!matches_any(
+            Path::new("nested/deep/error.txt"),
+            &extensions
+        ));
+
+        let question = vec!["file*?.log".to_string()];
+        assert!(!matches_any(Path::new("file123x.log"), &question));
+        assert!(matches_any(Path::new("file123?.log"), &question));
     }
 
     #[test]

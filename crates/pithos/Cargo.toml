@@ -9,6 +9,7 @@ clap.workspace = true
 console.workspace = true
 dirs.workspace = true
 eyre.workspace = true
+globset = "0.4.16"
 indicatif.workspace = true
 rayon.workspace = true
 reflink-copy.workspace = true

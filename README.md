@@ -477,7 +477,8 @@ unchanged. Verify Claude Code rules with `claude /permissions`.
 `ignore` is a list of paths excluded when populating the session workspace and
 when comparing or applying changes. `ephemeral` is a list of churn paths
 (build output, caches) that are likewise excluded from the end-of-session
-review.
+review. Both lists support `*` patterns such as `"*.log"` to match filenames
+with a given extension anywhere in the repository; `?` is not a wildcard.
 
 `diff_viewer` is an optional command used to review changes. It must contain a
 `{dir}` placeholder, which is replaced with the temporary workspace path.

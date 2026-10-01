@@ -408,6 +408,8 @@ impl Config {
         if self.environment.contains_key("diff_viewer") {
             bail!("diff_viewer must be a top-level key, not inside [environment]")
         }
+        crate::sandbox::validate_path_patterns("ignore", &self.ignore)?;
+        crate::sandbox::validate_path_patterns("ephemeral", &self.ephemeral)?;
         if self.networking.payload_size == Some(0) {
             bail!("networking.payload_size must be greater than 0")
         }
@@ -817,6 +819,23 @@ mod tests {
     fn starter_config_parses_with_commented_example() {
         let config: Config = toml::from_str(&starter_config()).unwrap();
         assert!(config.toolchains.is_empty());
+    }
+
+    #[test]
+    fn ignore_and_ephemeral_accept_star_globs() {
+        let config = Config::parse(
+            r#"
+            ignore = ["*.log"]
+            ephemeral = ["*.cache"]
+
+            [harness]
+            name = "opencode"
+            command = ["opencode", "/workspace"]
+            "#,
+        );
+        assert!(config.validate().is_ok());
+        assert_eq!(config.ignore, ["*.log"]);
+        assert_eq!(config.ephemeral, ["*.cache"]);
     }
 
     #[test]
