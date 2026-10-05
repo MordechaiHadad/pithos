@@ -38,7 +38,16 @@ pub(crate) fn pull(
     target_override: Option<&Path>,
     options: PullOptions,
 ) -> Result<()> {
-    let record = common::resolve_session(session_id)?;
+    let Some(record) = common::resolve_pull_push_session(
+        session_id,
+        target_override.is_some(),
+        options.auto_yes,
+        options.auto_no,
+        options.json,
+    )?
+    else {
+        return Ok(());
+    };
     let outcome = pull_workspace(&record, target_override, options)?;
     tracing::debug!(
         target = %outcome.target.display(),

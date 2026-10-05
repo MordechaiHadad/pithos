@@ -38,7 +38,16 @@ pub(crate) fn push(
     source_override: Option<&Path>,
     options: PushOptions,
 ) -> Result<()> {
-    let record = common::resolve_session(session_id)?;
+    let Some(record) = common::resolve_pull_push_session(
+        session_id,
+        source_override.is_some(),
+        options.auto_yes,
+        options.auto_no,
+        options.json,
+    )?
+    else {
+        return Ok(());
+    };
     let outcome = push_workspace(&record, source_override, options)?;
     tracing::debug!(
         source = %outcome.source.display(),

@@ -8,6 +8,7 @@ pithos-harness = { path = "../harness" }
 clap.workspace = true
 console.workspace = true
 dirs.workspace = true
+dialoguer = "0.12.0"
 eyre.workspace = true
 globset = "0.4.16"
 indicatif.workspace = true
