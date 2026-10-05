@@ -1,38 +1,31 @@
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
 
 use crate::def::HarnessDef;
 use crate::loader;
 
-static EMBEDDED: OnceLock<Vec<HarnessDef>> = OnceLock::new();
+const EMBEDDED_TOMLS: &[(&str, &str)] = &[
+    ("claude-code", include_str!("../harnesses/claude-code.toml")),
+    ("codex", include_str!("../harnesses/codex.toml")),
+    ("opencode", include_str!("../harnesses/opencode.toml")),
+];
 
-fn embedded() -> &'static Vec<HarnessDef> {
-    EMBEDDED.get_or_init(|| {
-        let mut out = Vec::new();
-        for (name, content) in embedded_toml_files() {
-            match HarnessDef::from_toml_str(content) {
-                Ok(def) => out.push(def),
-                Err(error) => {
-                    tracing::error!(name, %error, "invalid embedded harness TOML");
-                }
+fn builtin_defs() -> Vec<HarnessDef> {
+    let mut out = Vec::new();
+    for &(name, content) in EMBEDDED_TOMLS {
+        match HarnessDef::from_toml_str(content) {
+            Ok(def) => out.push(def),
+            Err(error) => {
+                tracing::error!(name, %error, "invalid embedded harness TOML");
             }
         }
-        out.sort_by(|a, b| a.name.cmp(&b.name));
-        out
-    })
-}
-
-fn embedded_toml_files() -> Vec<(&'static str, &'static str)> {
-    generated::EMBEDDED.to_vec()
-}
-
-mod generated {
-    include!(concat!(env!("OUT_DIR"), "/harnesses.rs"));
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
 }
 
 pub fn all_harnesses() -> Vec<HarnessDef> {
     let mut map: BTreeMap<String, HarnessDef> = BTreeMap::new();
-    for def in embedded().iter().cloned() {
+    for def in builtin_defs() {
         map.insert(def.name.clone(), def);
     }
     for def in loader::load_user_harnesses() {
@@ -46,7 +39,7 @@ pub fn find(name: &str) -> Option<HarnessDef> {
     if let Some(found) = user.into_iter().find(|def| def.name == name) {
         return Some(found);
     }
-    embedded().iter().find(|def| def.name == name).cloned()
+    builtin_defs().into_iter().find(|def| def.name == name)
 }
 
 pub fn available_names() -> Vec<String> {

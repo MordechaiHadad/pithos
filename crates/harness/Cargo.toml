@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 description = "Harness boundary for pithos - separated crate for harness integration"
 publish = false
-build = "build.rs"
 
 [dependencies]
 dirs.workspace = true
